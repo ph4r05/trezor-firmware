@@ -36,9 +36,11 @@ if __debug__:
         PREV_MEM = free
 
     def retit(**kwargs):
-        from trezor.messages.Failure import Failure
+        # from trezor.messages.Failure import Failure
+        from trezor.messages.DebugMoneroDiagAck import DebugMoneroDiagAck
 
-        return Failure(**kwargs)
+        return DebugMoneroDiagAck(**kwargs)
+        # return Failure(**kwargs)
 
     async def diag(ctx, msg, **kwargs):
         log.debug(__name__, "----diagnostics")
@@ -110,5 +112,36 @@ if __debug__:
                 check_mem("BP post verify")
 
             return retit()
+
+        elif msg.ins in [10]:
+            from trezor import utils
+            from . import mjson
+
+            mods = utils.unimport_begin()
+            mods = mjson.encode(list(mods))
+            #mods = ujson.dumps(mods)
+
+            return retit(data1=mods)
+
+        elif msg.ins in [11]:
+            from . import mjson
+
+            inp = bytes(msg.data1).decode('utf8')
+            pkgname, modname = mjson.decode(inp)
+            modpath = ".".join([pkgname, modname]) if pkgname else modname
+            del (msg, inp, pkgname)
+
+            gc.collect()
+            gc.collect()
+            free_prev = gc.mem_free()
+
+            module = __import__(modpath, None, None, (modname,), 0)
+
+            gc.collect()
+            gc.collect()
+            new_free = free_prev - gc.mem_free()
+
+            return retit(data1=mjson.encode(new_free))
+            pass
 
         return retit()
