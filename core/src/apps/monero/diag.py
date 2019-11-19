@@ -74,7 +74,7 @@ if __debug__:
             log.info(__name__, "Total modules: %s, Monero modules: %s", total, monero)
             return retit()
 
-        elif msg.ins in [5, 6, 7]:
+        elif msg.ins in [5, 6, 7, 8, 9, 10]:
             check_mem()
             from apps.monero.xmr import bulletproof as bp
 
@@ -87,8 +87,8 @@ if __debug__:
             bpi.gc_fnc = gc.collect
             bpi.gc_trace = log_trace
 
-            vals = [crypto.sc_init((1 << 30) - 1 + 16), crypto.sc_init(22222)]
-            masks = [crypto.random_scalar(), crypto.random_scalar()]
+            vals = [crypto.sc_init(137*i) for i in range(16)]
+            masks = [crypto.sc_init(991*i) for i in range(16)]
             check_mem("BP pre input")
 
             if msg.ins == 5:
@@ -104,6 +104,24 @@ if __debug__:
                 check_mem("BP post verify")
 
             elif msg.ins == 7:
+                bp_res = bpi.prove_batch(vals[:2], masks[:2])
+                check_mem("BP post prove")
+                bpi.verify(bp_res)
+                check_mem("BP post verify")
+
+            elif msg.ins == 8:
+                bp_res = bpi.prove_batch(vals[:4], masks[:4])
+                check_mem("BP post prove")
+                bpi.verify(bp_res)
+                check_mem("BP post verify")
+
+            elif msg.ins == 9:
+                bp_res = bpi.prove_batch(vals[:8], masks[:8])
+                check_mem("BP post prove")
+                bpi.verify(bp_res)
+                check_mem("BP post verify")
+
+            elif msg.ins == 10:
                 bp_res = bpi.prove_batch(vals, masks)
                 check_mem("BP post prove")
                 bpi.verify(bp_res)
