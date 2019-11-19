@@ -404,8 +404,20 @@ class KeyV(KeyVBase):
                 gc.collect()
                 self.d = bytearray(nsize << 5)
 
+        elif self.chunked and self.size < nsize:
+            if nsize % 64 != 0 or realloc or chop:
+                raise ValueError("Unsupported")  # not needed
+            for i in range((nsize - self.size) // 64):
+                self.d.append(bytearray(32 * 64))
+
         elif self.chunked:
-            raise ValueError("Unsupported")  # not needed
+            if nsize % 64 != 0:
+                raise ValueError("Unsupported")  # not needed
+            for i in range((self.size - nsize) // 64):
+                self.d.pop()
+            if realloc:
+                for i in range(nsize // 64):
+                    self.d[i] = bytearray(self.d[i])
 
         else:
             if self.size > nsize and realloc:
@@ -439,11 +451,9 @@ class KeyV(KeyVBase):
         if not self.chunked and not src.chunked:
             memcpy(self.d, 0, src.d, offset << 5, nsize << 5)
 
-        elif self.chunked and not src.chunked:
-            raise ValueError("Unsupported")  # not needed
-
-        elif self.chunked and src.chunked:
-            raise ValueError("Unsupported")  # not needed
+        elif self.chunked and not src.chunked or self.chunked and src.chunked:
+            for i in range(nsize):
+                self.read(i, src.to(i + offset))
 
         elif not self.chunked and src.chunked:
             for i in range(nsize >> 6):

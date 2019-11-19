@@ -438,6 +438,13 @@ class TestMoneroBulletproof(unittest.TestCase):
         proof = bpi.prove_batch(sv, gamma)
         bpi.verify_batch([proof])
 
+    def test_prove_batch16(self):
+        bpi = bp.BulletProofBuilder()
+        sv = [crypto.sc_init(137*i) for i in range(16)]
+        gamma = [crypto.sc_init(991*i) for i in range(16)]
+        proof = bpi.prove_batch(sv, gamma)
+        bpi.verify_batch([proof])
+
 
 if __name__ == "__main__":
     unittest.main()
