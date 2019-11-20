@@ -32,6 +32,11 @@ typedef struct _mp_obj_hasher_t {
   Hasher h;
 } mp_obj_hasher_t;
 
+typedef struct _mp_obj_prng_t {
+  mp_obj_base_t base;
+  ECRYPT_ctx ctx;
+} mp_obj_prng_t;
+
 typedef struct _mp_obj_ge25519_t {
   mp_obj_base_t base;
   ge25519 p;
@@ -49,6 +54,7 @@ typedef struct _mp_obj_bignum256modm_t {
 STATIC const mp_obj_type_t mod_trezorcrypto_monero_ge25519_type;
 STATIC const mp_obj_type_t mod_trezorcrypto_monero_bignum256modm_type;
 STATIC const mp_obj_type_t mod_trezorcrypto_monero_hasher_type;
+STATIC const mp_obj_type_t mod_trezorcrypto_monero_prng_type;
 
 #define MP_OBJ_IS_GE25519(o) \
   MP_OBJ_IS_TYPE((o), &mod_trezorcrypto_monero_ge25519_type)
@@ -1366,6 +1372,136 @@ STATIC mp_obj_t mod_trezorcrypto_monero_hasher_copy(mp_obj_t self) {
 STATIC MP_DEFINE_CONST_FUN_OBJ_1(mod_trezorcrypto_monero_hasher_copy_obj,
                                  mod_trezorcrypto_monero_hasher_copy);
 
+
+/// class Prng:
+///     """
+///     Simple PRNG based on chacha20
+///     """
+///
+///     def __init__(self, x: Optional[bytes] = None, offset: int = 0):
+///         """
+///         Constructor
+///         """
+///
+///     def next(self, n: int, buffer: Optional[bytes], offset: int = 0) -> bytes:
+///         """
+///         Get next bytes
+///         """
+///
+///     def rewind(self, n: int) -> bytes:
+///         """
+///         Rewind by n blocks
+///         """
+///
+///     def reset(self, x: Optional[bytes] = None, offset: int = 0) -> bytes:
+///         """
+///         Resets to the original state
+///         """
+///
+///     def copy(self) -> Prng:
+///         """
+///         Creates copy of the PRNG, preserving the state
+///         """
+///
+///
+STATIC mp_obj_t mod_trezorcrypto_monero_prng_make_new(
+    const mp_obj_type_t *type, size_t n_args, size_t n_kw,
+    const mp_obj_t *args) {
+  mp_arg_check_num(n_args, n_kw, 0, 1, false);
+  mp_obj_prng_t *o = m_new_obj(mp_obj_prng_t);
+  o->base.type = type;
+  memzero(&(o->ctx), sizeof(ECRYPT_ctx));
+
+  if (n_args >= 1) {
+    mp_buffer_info_t buff;
+    mp_get_buffer_raise(args[0], &buff, MP_BUFFER_READ);
+    const mp_int_t offset = n_args >= 2 ? mp_obj_get_int(args[1]) : 0;
+    if (buff.len < 32 + offset) {
+      mp_raise_ValueError("Buffer too small");
+    }
+    ECRYPT_keysetup(&o->ctx, (uint8_t*)buff.buf + offset, 256, 0);
+  }
+
+  return MP_OBJ_FROM_PTR(o);
+}
+
+STATIC mp_obj_t mod_trezorcrypto_monero_prng___del__(mp_obj_t self) {
+  mp_obj_prng_t *o = MP_OBJ_TO_PTR(self);
+  memzero(&(o->ctx), sizeof(ECRYPT_ctx));
+  return mp_const_none;
+}
+STATIC MP_DEFINE_CONST_FUN_OBJ_1(mod_trezorcrypto_monero_prng___del___obj,
+                                 mod_trezorcrypto_monero_prng___del__);
+
+STATIC mp_obj_t mod_trezorcrypto_monero_prng_next(size_t n_args, const mp_obj_t *args) {
+  const bool pbuff = n_args > 2 && args[2] != mp_const_none;
+  mp_obj_prng_t *o = MP_OBJ_TO_PTR(args[0]);
+  mp_int_t length = mp_obj_get_int(args[1]);
+  mp_int_t offset = n_args >= 4 ? mp_obj_get_int(args[3]) : 0;
+  if (length < 0 || offset < 0){
+    mp_raise_ValueError("Illegal offset/length");
+  }
+
+  const mp_obj_t obuff = pbuff ? args[2] : mp_obj_new_bytes(NULL, offset + length);
+  uint8_t *buff_use = NULL;
+  mp_buffer_info_t odata;
+  mp_get_buffer_raise(obuff, &odata, MP_BUFFER_WRITE);
+  if (odata.len < length + offset) {
+    mp_raise_ValueError("Illegal offset/length");
+  }
+  buff_use = (uint8_t*)odata.buf + offset;
+  memzero(buff_use, length);
+
+  ECRYPT_encrypt_bytes(&o->ctx, buff_use, buff_use, length);
+  return obuff;
+}
+STATIC MP_DEFINE_CONST_FUN_OBJ_VAR_BETWEEN(
+    mod_trezorcrypto_monero_prng_next_obj, 1, 3,
+    mod_trezorcrypto_monero_prng_next);
+
+STATIC mp_obj_t mod_trezorcrypto_monero_prng_rewind(mp_obj_t self, mp_obj_t length_obj) {
+  mp_obj_prng_t *o = MP_OBJ_TO_PTR(self);
+  mp_int_t length = mp_obj_get_int(length_obj);
+  uint8_t buff[64];
+  while(length > 0){
+    ECRYPT_encrypt_bytes(&o->ctx, buff, buff, length < 64 ? length : 64);
+    length = length >= 64 ? length - 64 : 0;
+  }
+  return mp_const_none;
+}
+STATIC MP_DEFINE_CONST_FUN_OBJ_2(mod_trezorcrypto_monero_prng_rewind_obj,
+                                 mod_trezorcrypto_monero_prng_rewind);
+
+STATIC mp_obj_t mod_trezorcrypto_monero_prng_reset(size_t n_args, const mp_obj_t *args) {
+  mp_obj_prng_t *o = MP_OBJ_TO_PTR(args[0]);
+  memzero(&(o->ctx), sizeof(ECRYPT_ctx));
+  if (n_args <= 1){
+    return mp_const_none;
+  }
+
+  mp_buffer_info_t buff;
+  mp_get_buffer_raise(args[1], &buff, MP_BUFFER_READ);
+  const mp_int_t offset = n_args > 2 ? mp_obj_get_int(args[2]) : 0;
+  if (buff.len < 32 + offset) {
+    mp_raise_ValueError("Buffer too small");
+  }
+  ECRYPT_keysetup(&o->ctx, (uint8_t*)buff.buf + offset, 256, 0);
+  return mp_const_none;
+}
+STATIC MP_DEFINE_CONST_FUN_OBJ_VAR_BETWEEN(
+    mod_trezorcrypto_monero_prng_reset_obj, 1, 3,
+    mod_trezorcrypto_monero_prng_reset);
+
+STATIC mp_obj_t mod_trezorcrypto_monero_prng_copy(mp_obj_t self) {
+  mp_obj_prng_t *o = MP_OBJ_TO_PTR(self);
+  mp_obj_prng_t *cp = m_new_obj(mp_obj_prng_t);
+  cp->base.type = o->base.type;
+  memcpy(&(cp->ctx), &(o->ctx), sizeof(ECRYPT_ctx));
+  return MP_OBJ_FROM_PTR(o);
+}
+STATIC MP_DEFINE_CONST_FUN_OBJ_1(mod_trezorcrypto_monero_prng_copy_obj,
+                                 mod_trezorcrypto_monero_prng_copy);
+
 //
 // Type defs
 //
@@ -1424,6 +1560,30 @@ STATIC const mp_obj_type_t mod_trezorcrypto_monero_hasher_type = {
     .name = MP_QSTR_hasher,
     .make_new = mod_trezorcrypto_monero_hasher_make_new,
     .locals_dict = (void *)&mod_trezorcrypto_monero_hasher_locals_dict,
+};
+
+STATIC const mp_rom_map_elem_t
+    mod_trezorcrypto_monero_prng_locals_dict_table[] = {
+        {MP_ROM_QSTR(MP_QSTR_next),
+            MP_ROM_PTR(&mod_trezorcrypto_monero_prng_next_obj)},
+        {MP_ROM_QSTR(MP_QSTR_rewind),
+            MP_ROM_PTR(&mod_trezorcrypto_monero_prng_rewind_obj)},
+        {MP_ROM_QSTR(MP_QSTR_reset),
+            MP_ROM_PTR(&mod_trezorcrypto_monero_prng_reset_obj)},
+        {MP_ROM_QSTR(MP_QSTR_copy),
+            MP_ROM_PTR(&mod_trezorcrypto_monero_prng_copy_obj)},
+        {MP_ROM_QSTR(MP_QSTR___del__),
+            MP_ROM_PTR(&mod_trezorcrypto_monero_prng___del___obj)},
+        {MP_ROM_QSTR(MP_QSTR_block_size), MP_ROM_INT(64)},
+};
+STATIC MP_DEFINE_CONST_DICT(mod_trezorcrypto_monero_prng_locals_dict,
+                            mod_trezorcrypto_monero_prng_locals_dict_table);
+
+STATIC const mp_obj_type_t mod_trezorcrypto_monero_prng_type = {
+    {&mp_type_type},
+    .name = MP_QSTR_prng,
+    .make_new = mod_trezorcrypto_monero_prng_make_new,
+    .locals_dict = (void *)&mod_trezorcrypto_monero_prng_locals_dict,
 };
 
 STATIC const mp_obj_str_t mod_trezorcrypto_monero_BP_GI_PRE_obj = {{&mp_type_bytes}, 0, 8192, (const byte*)""
@@ -2683,6 +2843,8 @@ STATIC const mp_rom_map_elem_t mod_trezorcrypto_monero_globals_table[] = {
      MP_ROM_PTR(&mod_trezorcrypto_ct_equals_obj)},
     {MP_ROM_QSTR(MP_QSTR_hasher),
      MP_ROM_PTR(&mod_trezorcrypto_monero_hasher_type)},
+    {MP_ROM_QSTR(MP_QSTR_prng),
+     MP_ROM_PTR(&mod_trezorcrypto_monero_prng_type)},
     // bulletproof constants
     {MP_ROM_QSTR(MP_QSTR_BP_GI_PRE),
      MP_ROM_PTR(&mod_trezorcrypto_monero_BP_GI_PRE_obj)},
