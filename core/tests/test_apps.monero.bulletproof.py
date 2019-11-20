@@ -21,12 +21,23 @@ class TestMoneroBulletproof(unittest.TestCase):
 
         sL = bpi.sL_vct(64)
         sR = bpi.sR_vct(64)
+        sL.allow_nonlinear = True
+        sR.allow_nonlinear = True
 
         self.assertEqual(sL.to(0, x), sL.to(0, y))
         self.assertEqual(sL.to(1, x), sL.to(1, y))
+
+        o63 = bytearray(sL.to(63))
+        o43 = bytearray(sL.to(43))
         self.assertEqual(sL.to(63, x), sL.to(63, y))
         self.assertNotEqual(sL.to(1, x), sL.to(0, y))
         self.assertNotEqual(sL.to(10, x), sL.to(0, y))
+        self.assertNotEqual(sL.to(15, x), o63)
+        self.assertEqual(sL.to(63, x), o63)
+        self.assertEqual(sL.to(43, x), o43)
+        self.assertEqual(sL.to(63, x), o63)
+        sL.to(22)
+        self.assertEqual(sL.to(43, x), o43)
 
         self.assertEqual(sR.to(0, x), sR.to(0, y))
         self.assertEqual(sR.to(1, x), sR.to(1, y))

@@ -15,6 +15,7 @@ NULL_KEY_ENC = b"\x00" * 32
 random_bytes = random.bytes
 ct_equals = tcry.ct_equals
 hasher = tcry.hasher
+prng = tcry.prng
 
 
 def keccak_factory(data=None):

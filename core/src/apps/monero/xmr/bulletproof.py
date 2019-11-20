@@ -665,6 +665,61 @@ class KeyVPowers(KeyVBase):
         else:
             return _copy_key(self.cur, val)
 
+class KeyVPrngMask(KeyVBase):
+    """
+    Vector of random elements. Allows only sequential access (no jumping). Resets on [0,1] access.
+    """
+
+    __slots__ = ("current_idx", "size", "raw", "sc", "cur", "seed", "prng", "allow_nonlinear", "last_idx")
+
+    def __init__(self, size, seed, raw=False, allow_nonlinear=False, **kwargs):
+        super().__init__(size)
+        self.last_idx = 0
+        self.raw = raw
+        self.sc = crypto.new_scalar()
+        self.cur = bytearray(32)
+        self.seed = bytes(seed)
+        self.prng = crypto.prng(seed)
+        self.allow_nonlinear = allow_nonlinear
+
+    def reset(self):
+        self.prng.reset(self.seed)
+        return self._next()
+
+    def _next(self):
+        self.prng.next(32, self.cur)
+        crypto.decodeint_into(self.sc, self.cur)
+        return self.sc if self.raw else crypto.encodeint_into(self.cur, self.sc)
+
+    def __getitem__(self, item):
+        prev = self.last_idx
+        item = self.idxize(item)
+        self.last_idx = item
+
+        if item == 0:
+            return self.reset()
+        elif item == prev:
+            return self.cur if not self.raw else self.sc
+        elif item == prev + 1:
+            return self._next()
+        else:
+            if not self.allow_nonlinear:
+                raise IndexError("Only linear scan allowed: %s, %s" % (prev, item))
+
+            if item < prev:
+                self.reset()
+                prev = 0
+
+            rev = 64 * (item - prev - 1)
+            self.prng.rewind(rev)
+            return self._next()
+
+    def to(self, idx, buff=None, offset=0):
+        if not buff:
+            return self[idx]
+        buff = _ensure_dst_key(buff)
+        return memcpy(buff, offset, self[idx], 0, 32)
+
 
 class KeyR0(KeyVBase):
     """
@@ -1151,14 +1206,16 @@ class BulletProofBuilder:
 
     def sL_vct(self, ln=_BP_N):
         return (
-            KeyVEval(ln, lambda i, dst: self._det_mask(i, True, dst))
+            KeyVPrngMask(ln, crypto.random_bytes(32))
+            # KeyVEval(ln, lambda i, dst: self._det_mask(i, True, dst))
             if self.use_det_masks
             else self.sX_gen(ln)
         )
 
     def sR_vct(self, ln=_BP_N):
         return (
-            KeyVEval(ln, lambda i, dst: self._det_mask(i, False, dst))
+            KeyVPrngMask(ln, crypto.random_bytes(32))
+            # KeyVEval(ln, lambda i, dst: self._det_mask(i, False, dst))
             if self.use_det_masks
             else self.sX_gen(ln)
         )
