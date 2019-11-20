@@ -1348,6 +1348,14 @@ STATIC MP_DEFINE_CONST_FUN_OBJ_VAR_BETWEEN(
     mod_trezorcrypto_monero_hasher_digest_obj, 1, 3,
     mod_trezorcrypto_monero_hasher_digest);
 
+STATIC mp_obj_t mod_trezorcrypto_monero_hasher_reset(mp_obj_t self) {
+  mp_obj_hasher_t *o = MP_OBJ_TO_PTR(self);
+  xmr_hasher_init(&(o->h));
+  return mp_const_none;
+}
+STATIC MP_DEFINE_CONST_FUN_OBJ_1(mod_trezorcrypto_monero_hasher_reset_obj,
+                                 mod_trezorcrypto_monero_hasher_reset);
+
 STATIC mp_obj_t mod_trezorcrypto_monero_hasher_copy(mp_obj_t self) {
   mp_obj_hasher_t *o = MP_OBJ_TO_PTR(self);
   mp_obj_hasher_t *cp = m_new_obj(mp_obj_hasher_t);
@@ -1399,6 +1407,8 @@ STATIC const mp_rom_map_elem_t
          MP_ROM_PTR(&mod_trezorcrypto_monero_hasher_update_obj)},
         {MP_ROM_QSTR(MP_QSTR_digest),
          MP_ROM_PTR(&mod_trezorcrypto_monero_hasher_digest_obj)},
+        {MP_ROM_QSTR(MP_QSTR_reset),
+         MP_ROM_PTR(&mod_trezorcrypto_monero_hasher_reset_obj)},
         {MP_ROM_QSTR(MP_QSTR_copy),
          MP_ROM_PTR(&mod_trezorcrypto_monero_hasher_copy_obj)},
         {MP_ROM_QSTR(MP_QSTR___del__),
@@ -2671,6 +2681,8 @@ STATIC const mp_rom_map_elem_t mod_trezorcrypto_monero_globals_table[] = {
      MP_ROM_PTR(&mod_trezorcrypto_monero_xmr_gen_c_obj)},
     {MP_ROM_QSTR(MP_QSTR_ct_equals),
      MP_ROM_PTR(&mod_trezorcrypto_ct_equals_obj)},
+    {MP_ROM_QSTR(MP_QSTR_hasher),
+     MP_ROM_PTR(&mod_trezorcrypto_monero_hasher_type)},
     // bulletproof constants
     {MP_ROM_QSTR(MP_QSTR_BP_GI_PRE),
      MP_ROM_PTR(&mod_trezorcrypto_monero_BP_GI_PRE_obj)},

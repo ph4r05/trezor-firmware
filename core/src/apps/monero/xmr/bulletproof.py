@@ -35,6 +35,7 @@ _BP_IP12 = b"\xff\xff\xff\xff\xff\xff\xff\xff\x00\x00\x00\x00\x00\x00\x00\x00\x0
 # Caution has to be exercised when using the registers and operations using the registers
 #
 
+_hasher = crypto.get_keccak()
 _tmp_bf_0 = bytearray(32)
 _tmp_bf_1 = bytearray(32)
 _tmp_bf_2 = bytearray(32)
@@ -231,12 +232,12 @@ def _hash_to_scalar(dst, data):
 
 def _hash_vct_to_scalar(dst, data):
     dst = _ensure_dst_key(dst)
-    ctx = crypto.get_keccak()
+    _hasher.reset()
     for x in data:
-        ctx.update(x)
-    hsh = ctx.digest()
+        _hasher.update(x)
+    dst = _hasher.digest(dst)
 
-    crypto.decodeint_into(_tmp_sc_1, hsh)
+    crypto.decodeint_into(_tmp_sc_1, dst)
     crypto.encodeint_into(dst, _tmp_sc_1)
     return dst
 
@@ -989,16 +990,16 @@ def _vector_dup(x, n, dst=None):
 
 def _hash_cache_mash(dst, hash_cache, *args):
     dst = _ensure_dst_key(dst)
-    ctx = crypto.get_keccak()
-    ctx.update(hash_cache)
+    _hasher.reset()
+    _hasher.update(hash_cache)
 
     for x in args:
         if x is None:
             break
-        ctx.update(x)
-    hsh = ctx.digest()
+        _hasher.update(x)
+    _hasher.digest(dst)
 
-    crypto.decodeint_into(_tmp_sc_1, hsh)
+    crypto.decodeint_into(_tmp_sc_1, dst)
     crypto.encodeint_into(hash_cache, _tmp_sc_1)
     _copy_key(dst, hash_cache)
     return dst

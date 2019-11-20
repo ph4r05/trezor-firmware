@@ -14,10 +14,11 @@ NULL_KEY_ENC = b"\x00" * 32
 
 random_bytes = random.bytes
 ct_equals = tcry.ct_equals
+hasher = tcry.hasher
 
 
 def keccak_factory(data=None):
-    return sha3_256(data=data, keccak=True)
+    return hasher(data)
 
 
 get_keccak = keccak_factory
