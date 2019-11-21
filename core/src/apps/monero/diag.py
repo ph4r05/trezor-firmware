@@ -74,7 +74,8 @@ if __debug__:
             log.info(__name__, "Total modules: %s, Monero modules: %s", total, monero)
             return retit()
 
-        elif msg.ins in [5, 6, 7, 8, 9, 10]:
+        elif msg.ins in [5]:
+            p1 = msg.p1 if msg.p1 else 1
             check_mem()
             from apps.monero.xmr import bulletproof as bp
 
@@ -91,42 +92,12 @@ if __debug__:
             masks = [crypto.sc_init(991*i) for i in range(16)]
             check_mem("BP pre input")
 
-            if msg.ins == 5:
-                bp_res = bpi.prove_testnet(vals[0], masks[0])
-                check_mem("BP post prove")
-                bpi.verify_testnet(bp_res)
-                check_mem("BP post verify")
+            bp_res = bpi.prove_batch(vals[:p1], masks[:p1])
+            check_mem("BP post prove")
 
-            elif msg.ins == 6:
-                bp_res = bpi.prove(vals[0], masks[0])
-                check_mem("BP post prove")
-                bpi.verify(bp_res)
-                check_mem("BP post verify")
-
-            elif msg.ins == 7:
-                bp_res = bpi.prove_batch(vals[:2], masks[:2])
-                check_mem("BP post prove")
-                bpi.verify(bp_res)
-                check_mem("BP post verify")
-
-            elif msg.ins == 8:
-                bp_res = bpi.prove_batch(vals[:4], masks[:4])
-                check_mem("BP post prove")
-                bpi.verify(bp_res)
-                check_mem("BP post verify")
-
-            elif msg.ins == 9:
-                bp_res = bpi.prove_batch(vals[:8], masks[:8])
-                check_mem("BP post prove")
-                bpi.verify(bp_res)
-                check_mem("BP post verify")
-
-            elif msg.ins == 10:
-                bp_res = bpi.prove_batch(vals, masks)
-                check_mem("BP post prove")
-                bpi.verify(bp_res)
-                check_mem("BP post verify")
-
+            bpi.verify(bp_res)
+            check_mem("BP post verify")
+            
             return retit()
 
         return retit()
