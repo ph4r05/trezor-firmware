@@ -542,6 +542,47 @@ class KeyVSized(KeyVBase):
         self.wrapped[self.idxize(key)] = value
 
 
+class KeyVWrapped(KeyVBase):
+    """
+    Resized vector, wrapping possibly larger vector
+    (e.g., precomputed, but has to have exact size for further computations)
+    """
+
+    __slots__ = ("current_idx", "size", "wrapped")
+
+    def __init__(self, wrapped, new_size, raw=False, sc=True):
+        super().__init__(new_size)
+        self.wrapped = wrapped
+        self.raw = raw
+        self.sc = sc
+        self.cur = bytearray(32) if not raw else (crypto.new_scalar() if sc else crypto.new_point())
+
+    def __getitem__(self, item):
+        return self.wrapped[self.idxize(item)]
+
+    def __setitem__(self, key, value):
+        self.wrapped[self.idxize(key)] = value
+
+    def to(self, idx, buff=None, offset=0):
+        buff = buff if buff else self.cur
+        if self.raw:
+            if self.sc:
+                return crypto.sc_copy(self.cur, self[idx])
+            else:
+                raise ValueError()
+        else:
+            return memcpy(buff, offset, self[idx], 0, 32)
+
+    def read(self, idx, buff, offset=0):
+        if self.raw:
+            if self.sc:
+                return crypto.sc_copy(self.wrapped[self.idxize(idx)], buff)
+            else:
+                raise ValueError()
+        else:
+            return memcpy(self.wrapped[self.idxize(idx)], 0, buff, offset, 32)
+
+
 class KeyVConst(KeyVBase):
     __slots__ = ("current_idx", "size", "elem")
 

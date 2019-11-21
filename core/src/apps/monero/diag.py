@@ -100,4 +100,158 @@ if __debug__:
             
             return retit()
 
+        elif msg.ins in [30]:
+            check_mem()
+            p1 = msg.p1
+            p2 = msg.p2 if msg.p2 else 32
+
+            from apps.monero.xmr import bulletproof as bp
+            check_mem("BP Imported")
+            from apps.monero.xmr import crypto
+            check_mem("Crypto Imported")
+
+            if p1 == 0:
+                a = [crypto.random_scalar() for _ in range(p2)]
+                log_trace('generated')
+                a1 = [bytearray(32) for i in range(len(a))]
+                log_trace('alloc')
+                for i in range(len(a)):
+                    crypto.encodeint_into(a1[i], a[i])
+                log_trace('converted')
+                for i in range(len(a)):
+                    crypto.decodeint_into(a[i], a1[i])
+                log_trace('converted2')
+
+            elif p1 == 1:
+                A = [crypto.scalarmult_base(2*i) for i in range(p2)]
+                log_trace('generated')
+                A1 = [bytearray(32) for i in range(len(A))]
+                log_trace('alloc')
+                for i in range(len(A)):
+                    crypto.encodepoint_into(A1[i], A[i])
+                log_trace('converted')
+                for i in range(len(A)):
+                    crypto.decodepoint_into(A[i], A1[i])
+                log_trace('converted2')
+
+            elif p1 == 2:
+                a = [crypto.random_scalar() for _ in range(p2)]
+                A = [crypto.scalarmult_base(2*i) for i in range(p2)]
+                B = [crypto.new_point() for i in range(p2)]
+                C = crypto.new_point()
+                log_trace('generated')
+                gc.collect()
+
+                for i in range(len(a)):
+                    crypto.scalarmult_into(B[i], A[i], a[i])
+                log_trace('done-scmult')
+                gc.collect()
+
+                for i in range(len(a)):
+                    crypto.scalarmult_base_into(B[i], a[i])
+                log_trace('done-scmult-b')
+                gc.collect()
+
+                for i in range(len(a)):
+                    crypto.point_add_into(C, C, A[i])
+                log_trace('done-add')
+                gc.collect()
+
+                for i in range(len(a)):
+                    crypto.add_keys2_into(C, a[i], a[i], A[i])
+                log_trace('done-add2')
+                gc.collect()
+
+                for i in range(len(a)):
+                    crypto.add_keys3_into(C, a[i], A[i], a[i], A[i])
+                log_trace('done-add3')
+                gc.collect()
+
+            elif p1 == 3:
+                a = [crypto.random_scalar() for _ in range(p2)]
+                b = [crypto.random_scalar() for i in range(p2)]
+                c = crypto.random_scalar()
+                log_trace('generated')
+                gc.collect()
+
+                for i in range(p2):
+                    crypto.sc_mul_into(c, a[i], b[i])
+                log_trace('done-mul')
+                gc.collect()
+
+                for i in range(p2):
+                    crypto.sc_muladd_into(c, a[i], b[i], c)
+                log_trace('done-muladd')
+                gc.collect()
+
+                for i in range(p2):
+                    crypto.sc_sub_into(c, a[i], b[i])
+                log_trace('done-scsub')
+                gc.collect()
+
+                for i in range(p2):
+                    crypto.sc_inv_into(c, a[i])
+                log_trace('done-scinv')
+                gc.collect()
+
+            elif p1 == 4:
+                a = [crypto.random_scalar() for _ in range(p2)]
+                b = [crypto.random_scalar() for _ in range(p2)]
+                A = [crypto.scalarmult_base(2*i)   for i in range(p2)]
+                B = [crypto.scalarmult_base(2*i+1) for i in range(p2)]
+                log_trace('generated')
+                gc.collect()
+
+                A = [bytearray(crypto.encodepoint(x)) for x in A]
+                B = [bytearray(crypto.encodepoint(x)) for x in B]
+                A = bp.KeyVWrapped(A, p2)
+                B = bp.KeyVWrapped(B, p2)
+                a = bp.KeyVWrapped(a, p2, raw=True)
+                b = bp.KeyVWrapped(b, p2, raw=True)
+                log_trace('converted')
+                gc.collect()
+
+                bp._vector_exponent_custom(A, B, None, None, dst=None, a_raw=a, b_raw=b)
+                log_trace('done-exp')
+                gc.collect()
+
+                bp._hadamard_fold(A, crypto.encodeint(a[0]), crypto.encodeint(b[0]))
+                log_trace('done-hfold')
+                gc.collect()
+
+                a1 = [bytearray(32) for i in range(len(a))]
+                for i in range(len(a)):
+                    crypto.encodeint_into(a1[i], a[i])
+                a1 = bp.KeyVWrapped(a1, p2)
+                log_trace('encoded')
+                gc.collect()
+
+                bp._scalar_fold(a1, crypto.encodeint(a[0]), crypto.encodeint(b[0]))
+                log_trace('done-scfold')
+
+            elif p1 == 5:
+                b = [bytearray(crypto.random_bytes(32)) for _ in range(p2)]
+                A = [crypto.new_point() for i in range(p2)]
+                log_trace('generated')
+                gc.collect()
+
+                for i in range(p2):
+                    crypto.keccak_hash_into(b[i], b[i])
+                log_trace('done - hash')
+                gc.collect()
+
+                for i in range(p2):
+                    crypto.hash_to_point_into(A[i], b[i])
+                log_trace('done - Hp')
+                gc.collect()
+
+                del(A)
+                gc.collect()
+                a = [crypto.new_scalar() for i in range(p2)]
+                for i in range(p2):
+                    crypto.hash_to_scalar_into(a[i], b[i])
+                log_trace('done - Hs')
+                gc.collect()
+
+
         return retit()
