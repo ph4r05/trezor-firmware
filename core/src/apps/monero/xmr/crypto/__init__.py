@@ -9,22 +9,109 @@
 
 from trezor.crypto import hmac, monero as tcry, random
 from trezor.crypto.hashlib import sha3_256
+from trezor import log
 
 NULL_KEY_ENC = b"\x00" * 32
 
-random_bytes = random.bytes
-ct_equals = tcry.ct_equals
-hasher = tcry.hasher
-prng = tcry.prng
+
+class defaultdict:
+    @staticmethod
+    def __new__(cls, default_factory=None, **kwargs):
+        # Some code (e.g. urllib.urlparse) expects that basic defaultdict
+        # functionality will be available to subclasses without them
+        # calling __init__().
+        self = super(defaultdict, cls).__new__(cls)
+        self.d = {}
+        return self
+
+    def __init__(self, default_factory=None, **kwargs):
+        self.d = kwargs
+        self.default_factory = default_factory
+
+    def __getitem__(self, key):
+        try:
+            return self.d[key]
+        except KeyError:
+            v = self.__missing__(key)
+            self.d[key] = v
+            return v
+
+    def __setitem__(self, key, v):
+        self.d[key] = v
+
+    def __delitem__(self, key):
+        del self.d[key]
+
+    def __contains__(self, key):
+        return key in self.d
+
+    def __missing__(self, key):
+        if self.default_factory is None:
+            raise KeyError(key)
+        return self.default_factory()
+
+    def clear(self):
+        self.d = {}
+
+
+FNCSX = [defaultdict(lambda: 0)]
+
+def _report(logg=False):
+    if logg: log.debug(__name__, "---- Crypto call report")
+    else: print('Fnc call report: [')
+
+    FNCS = FNCSX[0]
+    ln = len(FNCS.d)
+    for ix, k in enumerate(sorted(FNCS.d)):
+        if logg: log.debug(__name__, '  %s: %s', k, FNCS.d[k])
+        else: print('{"%s": %s}%s' % (k, FNCS.d[k], ',' if ix+1 < ln else ''))
+    if not logg: print(']')
+    FNCS.clear()
+
+def _report_reset():
+    FNCSX[0].clear()
+
+def wrap_fncs(*funcs):
+    ret = []
+
+    def mwrapper(func, i):
+        def wrapper(*args, **kwargs):
+            return func(*args, **kwargs)
+        return wrapper
+
+    for ix, func in enumerate(funcs):
+        ret.append(mwrapper(func, ix))
+    return ret
+
+def _wrap_count(func, fname=None):
+    def wrapper(*args, **kwargs):
+        FNCSX[0][fname] += 1
+        return func(*args, **kwargs)
+    return wrapper
+
+report, report_reset, wrap_count = wrap_fncs(_report, _report_reset, _wrap_count)
+
+def report_get():
+    return FNCSX[0]
+
+def report_set(fncs):
+    global FNCSX
+    FNCSX[0] = fncs
+
+
+random_bytes = wrap_count(random.bytes, 'random_bytes')
+ct_equals = wrap_count(tcry.ct_equals, 'ct_equal')
+hasher = wrap_count(tcry.hasher, 'hasher')
+prng = wrap_count(tcry.prng, 'prng')
 
 
 def keccak_factory(data=None):
     return hasher(data)
 
 
-get_keccak = keccak_factory
-keccak_hash = tcry.xmr_fast_hash
-keccak_hash_into = tcry.xmr_fast_hash
+get_keccak = wrap_count(keccak_factory, 'keccak_factory')
+keccak_hash = wrap_count(tcry.xmr_fast_hash, 'xmr_fast_hash')
+keccak_hash_into = wrap_count(tcry.xmr_fast_hash, 'xmr_fast_hash')
 
 
 def keccak_2hash(inp, buff=None):
@@ -44,40 +131,40 @@ def compute_hmac(key, msg=None):
 #
 
 
-new_point = tcry.ge25519_set_neutral
+new_point = wrap_count(tcry.ge25519_set_neutral, 'new_point')
 
 
-def new_scalar():
+def _new_scalar():
     return tcry.init256_modm(0)
+new_scalar = wrap_count(_new_scalar, 'new_scalar')
 
+decodepoint = wrap_count(tcry.ge25519_unpack_vartime, 'decodepoint')
+decodepoint_into = wrap_count(tcry.ge25519_unpack_vartime, 'decodepoint_into')
+encodepoint = wrap_count(tcry.ge25519_pack, 'encodepoint')
+encodepoint_into = wrap_count(tcry.ge25519_pack, 'encodepoint_into')
 
-decodepoint = tcry.ge25519_unpack_vartime
-decodepoint_into = tcry.ge25519_unpack_vartime
-encodepoint = tcry.ge25519_pack
-encodepoint_into = tcry.ge25519_pack
+decodeint = wrap_count(tcry.unpack256_modm, 'decodeint')
+decodeint_into_noreduce = wrap_count(tcry.unpack256_modm_noreduce, 'decodeint_into_noreduce')
+decodeint_into = wrap_count(tcry.unpack256_modm, 'decodeint_into')
+encodeint = wrap_count(tcry.pack256_modm, 'encodeint')
+encodeint_into = wrap_count(tcry.pack256_modm, 'encodeint_into')
 
-decodeint = tcry.unpack256_modm
-decodeint_into_noreduce = tcry.unpack256_modm_noreduce
-decodeint_into = tcry.unpack256_modm
-encodeint = tcry.pack256_modm
-encodeint_into = tcry.pack256_modm
+check_ed25519point = wrap_count(tcry.ge25519_check, 'check_ed25519point')
 
-check_ed25519point = tcry.ge25519_check
+scalarmult_base = wrap_count(tcry.ge25519_scalarmult_base, 'scalarmult_base')
+scalarmult_base_into = wrap_count(tcry.ge25519_scalarmult_base, 'scalarmult_base_into')
+scalarmult = wrap_count(tcry.ge25519_scalarmult, 'scalarmult')
+scalarmult_into = wrap_count(tcry.ge25519_scalarmult, 'scalarmult_into')
 
-scalarmult_base = tcry.ge25519_scalarmult_base
-scalarmult_base_into = tcry.ge25519_scalarmult_base
-scalarmult = tcry.ge25519_scalarmult
-scalarmult_into = tcry.ge25519_scalarmult
-
-point_add = tcry.ge25519_add
-point_add_into = tcry.ge25519_add
-point_sub = tcry.ge25519_sub
-point_sub_into = tcry.ge25519_sub
-point_eq = tcry.ge25519_eq
-point_double = tcry.ge25519_double
-point_double_into = tcry.ge25519_double
-point_mul8 = tcry.ge25519_mul8
-point_mul8_into = tcry.ge25519_mul8
+point_add = wrap_count(tcry.ge25519_add, 'point_add')
+point_add_into = wrap_count(tcry.ge25519_add, 'point_add_into')
+point_sub = wrap_count(tcry.ge25519_sub, 'point_sub')
+point_sub_into = wrap_count(tcry.ge25519_sub, 'point_sub_into')
+point_eq = wrap_count(tcry.ge25519_eq, 'point_eq')
+point_double = wrap_count(tcry.ge25519_double, 'point_double')
+point_double_into = wrap_count(tcry.ge25519_double, 'point_double_into')
+point_mul8 = wrap_count(tcry.ge25519_mul8, 'point_mul8')
+point_mul8_into = wrap_count(tcry.ge25519_mul8, 'point_mul8_into')
 
 INV_EIGHT = b"\x79\x2f\xdc\xe2\x29\xe5\x06\x61\xd0\xda\x1c\x7d\xb3\x9d\xd3\x07\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x06"
 INV_EIGHT_SC = decodeint(INV_EIGHT)
@@ -112,17 +199,17 @@ def sc_init_into(r, x):
     return tcry.init256_modm(r, x)
 
 
-sc_copy = tcry.init256_modm
-sc_get64 = tcry.get256_modm
-sc_check = tcry.check256_modm
-check_sc = tcry.check256_modm
+sc_copy = wrap_count(tcry.init256_modm, 'sc_copy')
+sc_get64 = wrap_count(tcry.get256_modm, 'sc_get64')
+sc_check = wrap_count(tcry.check256_modm, 'sc_check')
+check_sc = wrap_count(tcry.check256_modm, 'check_sc')
 
-sc_add = tcry.add256_modm
-sc_add_into = tcry.add256_modm
-sc_sub = tcry.sub256_modm
-sc_sub_into = tcry.sub256_modm
-sc_mul = tcry.mul256_modm
-sc_mul_into = tcry.mul256_modm
+sc_add = wrap_count(tcry.add256_modm, 'sc_add')
+sc_add_into = wrap_count(tcry.add256_modm, 'sc_add_into')
+sc_sub = wrap_count(tcry.sub256_modm, 'sc_sub')
+sc_sub_into = wrap_count(tcry.sub256_modm, 'sc_sub_into')
+sc_mul = wrap_count(tcry.mul256_modm, 'sc_mul')
+sc_mul_into = wrap_count(tcry.mul256_modm, 'sc_mul_into')
 
 
 def sc_isnonzero(c):
@@ -132,12 +219,12 @@ def sc_isnonzero(c):
     return not tcry.iszero256_modm(c)
 
 
-sc_eq = tcry.eq256_modm
-sc_mulsub = tcry.mulsub256_modm
-sc_mulsub_into = tcry.mulsub256_modm
-sc_muladd = tcry.muladd256_modm
-sc_muladd_into = tcry.muladd256_modm
-sc_inv_into = tcry.inv256_modm
+sc_eq = wrap_count(tcry.eq256_modm, 'sc_eq')
+sc_mulsub = wrap_count(tcry.mulsub256_modm, 'sc_mulsub')
+sc_mulsub_into = wrap_count(tcry.mulsub256_modm, 'sc_mulsub_into')
+sc_muladd = wrap_count(tcry.muladd256_modm, 'sc_muladd')
+sc_muladd_into = wrap_count(tcry.muladd256_modm, 'sc_muladd_into')
+sc_inv_into = wrap_count(tcry.inv256_modm, 'sc_inv_into')
 
 
 def random_scalar(r=None):
@@ -179,10 +266,10 @@ http://elligator.cr.yp.to/elligator-20130828.pdf
 #
 
 
-cn_fast_hash = keccak_hash
+cn_fast_hash = wrap_count(keccak_hash, 'cn_fast_hash')
 
 
-def hash_to_scalar(data, length=None):
+def _hash_to_scalar(data, length=None):
     """
     H_s(P)
     """
@@ -190,10 +277,13 @@ def hash_to_scalar(data, length=None):
     return tcry.xmr_hash_to_scalar(dt)
 
 
-def hash_to_scalar_into(r, data, length=None):
+def _hash_to_scalar_into(r, data, length=None):
     dt = data[:length] if length else data
     return tcry.xmr_hash_to_scalar(r, dt)
 
+
+hash_to_scalar = wrap_count(_hash_to_scalar, 'hash_to_scalar')
+hash_to_scalar_into = wrap_count(_hash_to_scalar_into, 'hash_to_scalar_into')
 
 """
 H_p(buf)
@@ -202,8 +292,8 @@ Code adapted from MiniNero: https://github.com/monero-project/mininero
 https://github.com/monero-project/research-lab/blob/master/whitepaper/ge_fromfe_writeup/ge_fromfe.pdf
 http://archive.is/yfINb
 """
-hash_to_point = tcry.xmr_hash_to_ec
-hash_to_point_into = tcry.xmr_hash_to_ec
+hash_to_point = wrap_count(tcry.xmr_hash_to_ec, 'hash_to_point')
+hash_to_point_into = wrap_count(tcry.xmr_hash_to_ec, 'hash_to_point_into')
 
 
 #
@@ -218,11 +308,11 @@ def scalarmult_h(i):
     return scalarmult(xmr_H(), sc_init(i) if isinstance(i, int) else i)
 
 
-add_keys2 = tcry.xmr_add_keys2_vartime
-add_keys2_into = tcry.xmr_add_keys2_vartime
-add_keys3 = tcry.xmr_add_keys3_vartime
-add_keys3_into = tcry.xmr_add_keys3_vartime
-gen_commitment = tcry.xmr_gen_c
+add_keys2 = wrap_count(tcry.xmr_add_keys2_vartime, 'add_keys2')
+add_keys2_into = wrap_count(tcry.xmr_add_keys2_vartime, 'add_keys2_into')
+add_keys3 = wrap_count(tcry.xmr_add_keys3_vartime, 'add_keys3')
+add_keys3_into = wrap_count(tcry.xmr_add_keys3_vartime, 'add_keys3_into')
+gen_commitment = wrap_count(tcry.xmr_gen_c, 'gen_commitment')
 
 
 def generate_key_derivation(pub, sec):

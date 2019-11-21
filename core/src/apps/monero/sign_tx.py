@@ -12,14 +12,18 @@ async def sign_tx(ctx, received_msg, keychain):
 
     # Splitting ctx.call() to write() and read() helps to reduce memory fragmentation
     # between calls.
+    from apps.monero.xmr import crypto
     while True:
         if __debug__:
             log.debug(__name__, "#### F: %s, A: %s, step: %s", gc.mem_free(), gc.mem_alloc(), get_step(received_msg))
         gc.collect()
         gc.threshold(gc.mem_free() // 4 + gc.mem_alloc())
 
+        crypto.report_reset()
         result_msg, accept_msgs = await sign_tx_dispatch(state, received_msg, keychain)
         if state: state.dump_size()
+        crypto.report()
+
         if accept_msgs is None:
             break
 

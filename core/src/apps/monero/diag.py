@@ -94,10 +94,10 @@ if __debug__:
 
             bp_res = bpi.prove_batch(vals[:p1], masks[:p1])
             check_mem("BP post prove")
-
+            crypto.report()
             bpi.verify(bp_res)
             check_mem("BP post verify")
-            
+            crypto.report()
             return retit()
 
         elif msg.ins in [7]:
@@ -107,17 +107,18 @@ if __debug__:
             if msg.p1 == 0:
                 BPP(None)  # clear old state
 
-            check_mem()
-            from apps.monero.xmr import bulletproof as bp
-            check_mem("BP Imported")
+            check_mem("Diag init")
             from apps.monero.xmr import crypto
             check_mem("Crypto Imported")
+            from apps.monero.xmr import bulletproof as bp
+            check_mem("BP Imported")
             check_mem("+++BP START: %s; %s" % (msg.p1, p2))
             gc.collect()
             log_trace("BP START")
 
             bpi, res = None, None
             if msg.p1 == 0:
+                crypto.report_reset()
                 bp.PRNG = crypto.prng(bp._ZERO)
                 bpi = bp.BulletProofBuilder()
                 bpi.gc_fnc = gc.collect
@@ -132,14 +133,19 @@ if __debug__:
                     bpi.batching = msg.pd[3]
 
                 res = bpi.prove_batch_off(sv, gamma, msg.data3)
+                crypto.report()
                 state = bpi.dump_state()
-                del(bp, bpi, crypto)
+                del(bp, bpi)
                 gc.collect()
                 log_trace("BP STATE")
-                BPP(state)
+                BPP((state, crypto.report_get()))
+                del(crypto)
+                gc.collect()
+                log_trace("BP STATE2")
 
             else:
-                state = BPP()
+                crypto.report_reset()
+                state, fncs = BPP()
                 bpi = bp.BulletProofBuilder()
                 bpi.load_state(state)
                 del(state)
@@ -151,12 +157,18 @@ if __debug__:
                 bpi.gc_fnc = gc.collect
                 bpi.gc_trace = log_trace
 
+                crypto.report_reset()
+                crypto.report_set(fncs)
                 res = bpi.prove_batch_off_step(msg.data3)
+                crypto.report()
                 state = bpi.dump_state()
-                del(bp, bpi, crypto)
+                del(bp, bpi)
                 gc.collect()
                 log_trace("BP STATE")
-                BPP(state)
+                BPP((state, fncs))
+                del(crypto)
+                gc.collect()
+                log_trace("BP STATE2")
 
             gc.collect()
             log_trace("BP STEP")
