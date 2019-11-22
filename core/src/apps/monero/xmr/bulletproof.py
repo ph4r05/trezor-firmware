@@ -358,6 +358,10 @@ class KeyV(KeyVBase):
         if not no_init:
             self._set_mv()
 
+    @staticmethod
+    def chunk_size():
+        return _CHSIZE
+
     def _set_d(self, elems):
         if elems > _CHSIZE and elems % _CHSIZE == 0:
             self.chunked = True
@@ -1217,7 +1221,7 @@ class BulletProofBuilder:
         self.batching = 32
         self.offload = False
         self.off_method = 0
-        self.nprime_thresh = 32
+        self.nprime_thresh = 64
 
         self.MN = 1
         self.M = 1
@@ -1252,10 +1256,8 @@ class BulletProofBuilder:
         self.alpha = None
         self.Gprec2 = None
         self.Hprec2 = None
-        self.aprime = None
-        self.bprime = None
-        self.Gprime = None
-        self.Hprime = None
+        self.Xprime = [None, None, None, None]
+
         self.L = None
         self.R = None
         self.w_round = None
@@ -1277,14 +1279,43 @@ class BulletProofBuilder:
 
         self.offstate = 0
         self.offpos = 0
-        self.bl0 = None
-        self.bl1 = None
-        self.bl2 = None
-        self.bl3 = None
-        self.bl0N = None
-        self.bl1N = None
-        self.bl2N = None
-        self.bl3N = None
+
+        # 2 blinds per vector, one for lo, one for hi. 2*i, 2*i+1. Ordering G, H, a, b
+        # blinds[0] current blinds
+        # blinds[1] new blinds
+        self.blinds = [[], []]
+
+    @property
+    def Gprime(self):
+        return self.Xprime[0]
+
+    @property
+    def Hprime(self):
+        return self.Xprime[1]
+
+    @property
+    def aprime(self):
+        return self.Xprime[2]
+
+    @property
+    def bprime(self):
+        return self.Xprime[3]
+
+    @Gprime.setter
+    def Gprime(self, val):
+        self.Xprime[0] = val
+
+    @Hprime.setter
+    def Hprime(self, val):
+        self.Xprime[1] = val
+
+    @aprime.setter
+    def aprime(self, val):
+        self.Xprime[2] = val
+
+    @bprime.setter
+    def bprime(self, val):
+        self.Xprime[3] = val
 
     def gc(self, *args):
         if self.gc_trace:
@@ -1623,8 +1654,8 @@ class BulletProofBuilder:
             _sc_muladd(_tmp_bf_0, self.x, self.l1.to(i), self.l0.to(i))
             _sc_muladd(_tmp_bf_1, self.x, self.r1.to(i), self.r0.to(i))
             _sc_muladd(self.ts, _tmp_bf_0, _tmp_bf_1, None, c_raw=self.ts, raw=True)
-            _sc_mul(_tmp_bf_0, _tmp_bf_0, None, b_raw=self.bl0)  # blinding
-            _sc_mul(_tmp_bf_1, _tmp_bf_1, None, b_raw=self.bl1)  # blinding
+            _sc_mul(_tmp_bf_0, _tmp_bf_0, None, b_raw=self.blinds[0][2])  # blinding a
+            _sc_mul(_tmp_bf_1, _tmp_bf_1, None, b_raw=self.blinds[0][3])  # blinding b
             l.read(i - self.offpos, _tmp_bf_0)
             r.read(i - self.offpos, _tmp_bf_1)
 
@@ -1681,25 +1712,21 @@ class BulletProofBuilder:
 
         return self.A, self.S, self.T1, self.T2, self.taux, self.mu, self.t, self.l, self.r, self.y, self.x_ip, self.hash_cache
 
+    def _new_blinds(self, ix):
+        if self.blinds[ix] is None or len(self.blinds[ix]) != 8 or self.blinds[ix][0] is None:
+            self.blinds[ix] = [crypto.random_scalar() for _ in range(8)]
+        else:
+            for i in range(8):
+                crypto.random_scalar(self.blinds[ix][i])
+
+    def _swap_blinds(self):
+        self.blinds[0], self.blinds[1] = self.blinds[1], self.blinds[0]
+
     def _prove_new_blinds(self):
-        self.bl0 = crypto.random_scalar()
-        self.bl1 = crypto.random_scalar()
-        self.bl2 = crypto.random_scalar()
-        self.bl3 = crypto.random_scalar()
-        # self.bl0 = crypto.decodeint(_ONE)
-        # self.bl1 = crypto.decodeint(_ONE)
-        # self.bl2 = crypto.decodeint(_ONE)
-        # self.bl3 = crypto.decodeint(_ONE)
+        self._new_blinds(0)
 
     def _prove_new_blindsN(self):
-        self.bl0N = crypto.random_scalar()
-        self.bl1N = crypto.random_scalar()
-        self.bl2N = crypto.random_scalar()
-        self.bl3N = crypto.random_scalar()
-        # self.bl0N = crypto.decodeint(_ONE)
-        # self.bl1N = crypto.decodeint(_ONE)
-        # self.bl2N = crypto.decodeint(_ONE)
-        # self.bl3N = crypto.decodeint(_ONE)
+        self._new_blinds(1)
 
     def _phase2_loop0_clcr(self, buffers):
         """
@@ -1758,17 +1785,17 @@ class BulletProofBuilder:
         if self.offpos >= self.nprime:# * 2:
             print('offpos trigger')
             # unblind cX
-            _sc_mul(tmp, a_raw=self.bl0, b_raw=self.bl1)
+            _sc_mul(tmp, a_raw=self.blinds[0][2], b_raw=self.blinds[0][3])
             _invert(tmp, tmp)
             _sc_mul(cX, cX, tmp)
 
             # unblind XcA
-            _sc_mul(tmp, a_raw=self.bl0, b_raw=self.bl2 if self.round > 0 else crypto.decodeint(_ONE))
+            _sc_mul(tmp, a_raw=self.blinds[0][2], b_raw=self.blinds[0][0] if self.round > 0 else crypto.decodeint(_ONE))
             _invert(tmp, tmp)
             _scalarmult_key(XcA, XcA, tmp)
 
             # unblind XcB
-            _sc_mul(tmp, a_raw=self.bl1, b_raw=self.bl3 if self.round > 0 else crypto.decodeint(_ONE))
+            _sc_mul(tmp, a_raw=self.blinds[0][3], b_raw=self.blinds[0][1] if self.round > 0 else crypto.decodeint(_ONE))
             _invert(tmp, tmp)
             _scalarmult_key(XcB, XcB, tmp)
 
@@ -1831,25 +1858,22 @@ class BulletProofBuilder:
         LcA, LcB = buffers[2], buffers[3]
         RcA, RcB = buffers[4], buffers[5]
 
-        ibl0 = _invert(None, crypto.encodeint(self.bl0))  # a
-        ibl1 = _invert(None, crypto.encodeint(self.bl1))  # b
-        ibl2 = _invert(None, crypto.encodeint(self.bl2))  # G
-        ibl3 = _invert(None, crypto.encodeint(self.bl3))  # H
+        ibls = [_invert(None, crypto.encodeint(x)) for x in self.blinds[0]]
 
-        cL = _sc_mul(cL, cL, ibl0)
-        cL = _sc_mul(cL, cL, ibl1)
+        cL = _sc_mul(cL, cL, ibls[2])
+        cL = _sc_mul(cL, cL, ibls[3])
 
-        cR = _sc_mul(cR, cR, ibl0)
-        cR = _sc_mul(cR, cR, ibl1)
+        cR = _sc_mul(cR, cR, ibls[2])
+        cR = _sc_mul(cR, cR, ibls[3])
 
         # print('r: %s, cL ' % self.round, ubinascii.hexlify(cL))
         # print('r: %s, cR ' % self.round, ubinascii.hexlify(cR))
 
-        LcA = _scalarmult_key(LcA, LcA, _sc_mul(None, ibl0, ibl2))
-        RcA = _scalarmult_key(RcA, RcA, _sc_mul(None, ibl0, ibl2))
+        LcA = _scalarmult_key(LcA, LcA, _sc_mul(None, ibls[2], ibls[0]))
+        RcA = _scalarmult_key(RcA, RcA, _sc_mul(None, ibls[2], ibls[0]))
 
-        LcB = _scalarmult_key(LcB, LcB, _sc_mul(None, ibl1, ibl3))
-        RcB = _scalarmult_key(RcB, RcB, _sc_mul(None, ibl1, ibl3))
+        LcB = _scalarmult_key(LcB, LcB, _sc_mul(None, ibls[3], ibls[1]))
+        RcB = _scalarmult_key(RcB, RcB, _sc_mul(None, ibls[3], ibls[1]))
 
         _add_keys(_tmp_bf_0, LcA, LcB)
         _sc_mul(tmp, cL, self.x_ip)
@@ -1888,11 +1912,11 @@ class BulletProofBuilder:
         Computes folding per partes
         """
         print('phase2_loop_fold, state: %s, off: %s, round: %s, nprime: %s' % (self.offstate, self.offpos, self.round, self.nprime))
-        tgt = min(self.batching, self.nprime)
-        fld = KeyV(tgt, bytearray(32 * tgt))
 
+        # Input buffer processing.
+        # The first round has in-memory G, H buffers
         lo, hi = None, None
-        if self.round == 0 and self.offstate in (3, 4):  # in-memory G, H; empty buffers
+        if self.round == 0 and self.offstate in (3, 4):
             if self.offpos == 0 and self.offstate == 4:
                 self.yinvpowR.reset()
                 self.yinvpowR.rewind(self.nprime)
@@ -1907,32 +1931,22 @@ class BulletProofBuilder:
         else:
             lo, hi = KeyV(len(buffers[0])//32, buffers[0]), KeyV(len(buffers[1])//32, buffers[1])
 
+        # In memory caching from some point
+        utils.ensure(self.nprime_thresh <= KeyV.chunk_size(), "Threshold has to be lower than chunk size, or disable chunking")
         inmem = self.nprime <= self.nprime_thresh
+        tgt = min(self.batching, self.nprime)
+        fld = None
+
         if inmem:
-            print('INMEM')
+            if self.offpos == 0:  # allocate in-memory buffers now
+                fldS = KeyV(self.nprime)
+                self.Xprime[self.offstate - 3] = fldS
+            fld = KeyVSliced(self.Xprime[self.offstate - 3], self.offpos, min(self.offpos + self.batching, self.nprime))
+        else:
+            fld = KeyV(tgt, bytearray(32 * tgt))
 
-        blinv = None
-        nbli  = None
-
-        if self.offstate == 3:  # G
-            blinv = _invert(None, crypto.encodeint(self.bl2))
-            if inmem: self.Gprime = fld
-            else: nbli = self.bl2N
-
-        elif self.offstate == 4:  # H
-            blinv = _invert(None, crypto.encodeint(self.bl3))
-            if inmem: self.Hprime = fld
-            else: nbli = self.bl3N
-
-        elif self.offstate == 5:  # a
-            blinv = _invert(None, crypto.encodeint(self.bl0))
-            if inmem: self.aprime = fld
-            else: nbli = self.bl0N
-
-        elif self.offstate == 6:  # b
-            blinv = _invert(None, crypto.encodeint(self.bl1))
-            if inmem: self.bprime = fld
-            else: nbli = self.bl1N
+        blinv = _invert(None, crypto.encodeint(self.blinds[0][self.offstate - 3]))
+        nbli  = None if inmem else self.blinds[1][self.offstate - 3]
 
         if self.round == 0 and self.offstate in [3, 4]:
             blinv = _ONE  # no blinding for in-memory Gprime, Hprime in the round 0
@@ -1997,10 +2011,7 @@ class BulletProofBuilder:
             print('Moved to state %s' % self.offstate)
 
             # Rotate blindings
-            self.bl0 = self.bl0N
-            self.bl1 = self.bl1N
-            self.bl2 = self.bl2N
-            self.bl3 = self.bl3N
+            self._swap_blinds()
 
         if self.nprime <= 0:
             self.offstate = 12  # final, _phase2_final
