@@ -86,12 +86,16 @@ def _gc_iter(i):
         gc.collect()
 
 
-def _invert(dst, x):
-    dst = _ensure_dst_key(dst)
-    crypto.decodeint_into_noreduce(_tmp_sc_1, x)
-    crypto.sc_inv_into(_tmp_sc_2, _tmp_sc_1)
-    crypto.encodeint_into(dst, _tmp_sc_2)
-    return dst
+def _invert(dst, x=None, x_raw=None, raw=False):
+    dst = _ensure_dst_key(dst) if not raw else (crypto.new_scalar() if not dst else dst)
+    if x:
+        crypto.decodeint_into_noreduce(_tmp_sc_1, x)
+    crypto.sc_inv_into(_tmp_sc_2, _tmp_sc_1 if x else x_raw)
+    if raw:
+        return crypto.sc_copy(dst, _tmp_sc_2)
+    else:
+        crypto.encodeint_into(dst, _tmp_sc_2)
+        return dst
 
 
 def _scalarmult_key(dst, P, s, s_raw=None, tmp_pt=_tmp_pt_1):
@@ -1016,7 +1020,6 @@ def _hadamard_fold(v, a, b, into=None, into_offset=0, vR=None, vRoff=0):
     for i in range(h):
         crypto.decodepoint_into(_tmp_pt_1, v.to(i))
         crypto.decodepoint_into(_tmp_pt_2, v.to(h + i) if not vR else vR.to(i + vRoff))
-        #print(' ... ', ubinascii.hexlify(crypto.encodepoint(_tmp_pt_1)), ubinascii.hexlify(crypto.encodepoint(_tmp_pt_2)))
         crypto.add_keys3_into(_tmp_pt_3, _tmp_sc_1, _tmp_pt_1, _tmp_sc_2, _tmp_pt_2)
         crypto.encodepoint_into(_tmp_bf_0, _tmp_pt_3)
         into.read(i + into_offset, _tmp_bf_0)
@@ -1651,11 +1654,12 @@ class BulletProofBuilder:
         r = KeyV(self.batching, bytearray(32 * self.batching))
 
         for i in range(self.offpos, self.offpos + self.batching):
+            bloff = int(i >= (self.MN >> 1))
             _sc_muladd(_tmp_bf_0, self.x, self.l1.to(i), self.l0.to(i))
             _sc_muladd(_tmp_bf_1, self.x, self.r1.to(i), self.r0.to(i))
             _sc_muladd(self.ts, _tmp_bf_0, _tmp_bf_1, None, c_raw=self.ts, raw=True)
-            _sc_mul(_tmp_bf_0, _tmp_bf_0, None, b_raw=self.blinds[0][2*2])  # blinding a
-            _sc_mul(_tmp_bf_1, _tmp_bf_1, None, b_raw=self.blinds[0][3*2])  # blinding b
+            _sc_mul(_tmp_bf_0, _tmp_bf_0, None, b_raw=self.blinds[0][4+bloff])  # blinding a
+            _sc_mul(_tmp_bf_1, _tmp_bf_1, None, b_raw=self.blinds[0][6+bloff])  # blinding b
             l.read(i - self.offpos, _tmp_bf_0)
             r.read(i - self.offpos, _tmp_bf_1)
 
@@ -1701,7 +1705,6 @@ class BulletProofBuilder:
         if self.x_ip == _ZERO:
             return 0, None
 
-        print('x_ip: ', ubinascii.hexlify(self.x_ip))
         # prepare for looping
         self.offstate, self.offpos = 20, 0
         self.round = 0
@@ -1771,7 +1774,6 @@ class BulletProofBuilder:
         XcB = self.LcB if self.offstate == 20 else self.RcB
         tmp = _ensure_dst_key()
 
-        print(len(a), len(b), len(G), len(H))
         for i in range(len(a)):
             _sc_muladd(cX, a.to(i), b.to(i), cX)  # cX dot product
 
@@ -1783,19 +1785,25 @@ class BulletProofBuilder:
 
         self.offpos += min(len(a), self.batching)
         if self.offpos >= self.nprime:# * 2:
-            print('offpos trigger')
+            # Unblinding vectors with half-blinded masks
+            # Ordering: G,  H,  a,  b,  (01, 23, 45, 67)
+            # State 20: G1, H0, a0, b1; 1, 2, 4, 7
+            # State 21: G0, H1, a1, b0; 0, 3, 5, 6
+            blidx = (1, 2, 4, 7) if self.offstate == 20 else (0, 3, 5, 6)
+            cbl = [self.blinds[0][x] for x in blidx]
+
             # unblind cX
-            _sc_mul(tmp, a_raw=self.blinds[0][2*2], b_raw=self.blinds[0][2*3])
+            _sc_mul(tmp, a_raw=cbl[2], b_raw=cbl[3])
             _invert(tmp, tmp)
             _sc_mul(cX, cX, tmp)
 
             # unblind XcA
-            _sc_mul(tmp, a_raw=self.blinds[0][2*2], b_raw=self.blinds[0][2*0] if self.round > 0 else crypto.decodeint(_ONE))
+            _sc_mul(tmp, a_raw=cbl[2], b_raw=cbl[0] if self.round > 0 else crypto.decodeint(_ONE))
             _invert(tmp, tmp)
             _scalarmult_key(XcA, XcA, tmp)
 
             # unblind XcB
-            _sc_mul(tmp, a_raw=self.blinds[0][2*3], b_raw=self.blinds[0][2*1] if self.round > 0 else crypto.decodeint(_ONE))
+            _sc_mul(tmp, a_raw=cbl[3], b_raw=cbl[1] if self.round > 0 else crypto.decodeint(_ONE))
             _invert(tmp, tmp)
             _scalarmult_key(XcB, XcB, tmp)
 
@@ -1858,22 +1866,24 @@ class BulletProofBuilder:
         LcA, LcB = buffers[2], buffers[3]
         RcA, RcB = buffers[4], buffers[5]
 
+        # blind masks: G0 G1 H0 H1 a0 a1 b0 b1
+        # blind masks: 0  1  2  3  4  5  6  7
         ibls = [_invert(None, crypto.encodeint(x)) for x in self.blinds[0]]
 
-        cL = _sc_mul(cL, cL, ibls[2*2])
-        cL = _sc_mul(cL, cL, ibls[2*3])
+        cL = _sc_mul(cL, cL, ibls[4])  # unblind a0
+        cL = _sc_mul(cL, cL, ibls[7])  # unblind b1
 
-        cR = _sc_mul(cR, cR, ibls[2*2])
-        cR = _sc_mul(cR, cR, ibls[2*3])
+        cR = _sc_mul(cR, cR, ibls[5])  # unblind a1
+        cR = _sc_mul(cR, cR, ibls[6])  # unblind b0
 
         # print('r: %s, cL ' % self.round, ubinascii.hexlify(cL))
         # print('r: %s, cR ' % self.round, ubinascii.hexlify(cR))
 
-        LcA = _scalarmult_key(LcA, LcA, _sc_mul(None, ibls[2*2], ibls[2*0]))
-        RcA = _scalarmult_key(RcA, RcA, _sc_mul(None, ibls[2*2], ibls[2*0]))
+        LcA = _scalarmult_key(LcA, LcA, _sc_mul(None, ibls[4], ibls[1]))  # a0 G1
+        RcA = _scalarmult_key(RcA, RcA, _sc_mul(None, ibls[5], ibls[0]))  # a1 G0
 
-        LcB = _scalarmult_key(LcB, LcB, _sc_mul(None, ibls[2*3], ibls[2*1]))
-        RcB = _scalarmult_key(RcB, RcB, _sc_mul(None, ibls[2*3], ibls[2*1]))
+        LcB = _scalarmult_key(LcB, LcB, _sc_mul(None, ibls[7], ibls[2]))  # b1 H0
+        RcB = _scalarmult_key(RcB, RcB, _sc_mul(None, ibls[6], ibls[3]))  # b0 H1
 
         _add_keys(_tmp_bf_0, LcA, LcB)
         _sc_mul(tmp, cL, self.x_ip)
@@ -1945,29 +1955,36 @@ class BulletProofBuilder:
         else:
             fld = KeyV(tgt, bytearray(32 * tgt))
 
-        blinv = _invert(None, crypto.encodeint(self.blinds[0][2*(self.offstate - 3)]))
-        nbli  = None if inmem else self.blinds[1][2*(self.offstate - 3)]
-
+        # Consider blinding by halves
+        # Folding has 4 different blind masks
         if self.round == 0 and self.offstate in [3, 4]:
-            blinv = _ONE  # no blinding for in-memory Gprime, Hprime in the round 0
+            blinv = (_ONE, _ONE)  # no blinding for in-memory Gprime, Hprime in the round 0
+        else:
+            blinv = (_invert(None, x_raw=self.blinds[0][2*(self.offstate - 3)]),
+                     _invert(None, x_raw=self.blinds[0][2*(self.offstate - 3) + 1]))
 
-        tw0 = _sc_mul(None, self.w_round, blinv)
-        twi = _sc_mul(None, self.winv, blinv)
+        nbli  = None if inmem else (
+            self.blinds[1][2*(self.offstate - 3)],
+            self.blinds[1][2*(self.offstate - 3) + 1]
+        )
 
+        a0 = crypto.new_scalar()
+        b0 = crypto.new_scalar()
         if self.offstate in [3, 6]:
-            crypto.decodeint_into_noreduce(_tmp_sc_1, twi)
-            crypto.decodeint_into_noreduce(_tmp_sc_2, tw0)
+            crypto.decodeint_into_noreduce(a0, _sc_mul(None, self.winv, blinv[0]))
+            crypto.decodeint_into_noreduce(b0, _sc_mul(None, self.w_round, blinv[1]))
         elif self.offstate in [4, 5]:
-            crypto.decodeint_into_noreduce(_tmp_sc_1, tw0)
-            crypto.decodeint_into_noreduce(_tmp_sc_2, twi)
+            crypto.decodeint_into_noreduce(a0, _sc_mul(None, self.w_round, blinv[0]))
+            crypto.decodeint_into_noreduce(b0, _sc_mul(None, self.winv, blinv[1]))
 
-        print('.. tgt: %s, lo: %s, hi: %s' % (tgt, len(lo), len(hi)))
         if self.offstate in [3, 4]:  # G, H
             for i in range(0, tgt):
                 crypto.decodepoint_into(_tmp_pt_1, lo.to(i))
                 crypto.decodepoint_into(_tmp_pt_2, hi.to(i))
-                crypto.add_keys3_into(_tmp_pt_3, _tmp_sc_1, _tmp_pt_1, _tmp_sc_2, _tmp_pt_2)
-                if nbli: crypto.scalarmult_into(_tmp_pt_3, _tmp_pt_3, nbli)  # blind again
+                crypto.add_keys3_into(_tmp_pt_3, a0, _tmp_pt_1, b0, _tmp_pt_2)
+                if nbli:
+                    noff = int(i + self.offpos >= (self.nprime>>1))
+                    crypto.scalarmult_into(_tmp_pt_3, _tmp_pt_3, nbli[noff])  # blind again
                 crypto.encodepoint_into(_tmp_bf_0, _tmp_pt_3)
                 fld.read(i, _tmp_bf_0)
                 _gc_iter(i)
@@ -1976,10 +1993,12 @@ class BulletProofBuilder:
             for i in range(0, tgt):
                 crypto.decodeint_into_noreduce(_tmp_sc_3, lo.to(i))
                 crypto.decodeint_into_noreduce(_tmp_sc_4, hi.to(i))
-                crypto.sc_mul_into(_tmp_sc_3, _tmp_sc_3, _tmp_sc_1)
-                crypto.sc_mul_into(_tmp_sc_4, _tmp_sc_4, _tmp_sc_2)
+                crypto.sc_mul_into(_tmp_sc_3, _tmp_sc_3, a0)
+                crypto.sc_mul_into(_tmp_sc_4, _tmp_sc_4, b0)
                 crypto.sc_add_into(_tmp_sc_3, _tmp_sc_3, _tmp_sc_4)
-                if nbli: crypto.sc_mul_into(_tmp_sc_3, _tmp_sc_3, nbli)  # blind again
+                if nbli:
+                    noff = int(i + self.offpos >= (self.nprime>>1))
+                    crypto.sc_mul_into(_tmp_sc_3, _tmp_sc_3, nbli[noff])  # blind again
                 crypto.encodeint_into(_tmp_bf_0, _tmp_sc_3)
                 fld.read(i, _tmp_bf_0)
                 _gc_iter(i)
