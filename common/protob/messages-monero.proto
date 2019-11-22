@@ -494,6 +494,7 @@ message DebugMoneroDiagRequest {
     repeated uint64 pd = 4;
     optional bytes data1 = 5;
     optional bytes data2 = 6;
+    repeated bytes data3 = 7;
 }
 
 /**
@@ -507,4 +508,5 @@ message DebugMoneroDiagAck {
     repeated uint64 pd = 4;
     optional bytes data1 = 5;
     optional bytes data2 = 6;
+    repeated bytes data3 = 7;
 }
