@@ -1,6 +1,6 @@
 import gc
 from micropython import const
-
+import ubinascii
 from trezor import utils
 from trezor.utils import memcpy as tmemcpy
 
@@ -28,6 +28,8 @@ _XMR_HP = crypto.xmr_H()
 # ip12 = inner_product(oneN, twoN);
 _BP_IP12 = b"\xff\xff\xff\xff\xff\xff\xff\xff\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00"
 
+
+PRNG = crypto.prng(_ZERO)
 
 #
 # Rct keys operations
@@ -120,7 +122,9 @@ def _scalarmult_base(dst, x):
 
 def _sc_gen(dst=None):
     dst = _ensure_dst_key(dst)
-    crypto.random_scalar(_tmp_sc_1)
+    buff = PRNG.next(32, bytearray(32))
+    crypto.decodeint_into(_tmp_sc_1, buff)
+    #crypto.random_scalar(_tmp_sc_1)
     crypto.encodeint_into(dst, _tmp_sc_1)
     return dst
 
@@ -145,12 +149,13 @@ def _sc_sub(dst, a, b, a_raw=None, b_raw=None):
     return dst
 
 
-def _sc_mul(dst, a, b=None, b_raw=None):
+def _sc_mul(dst, a=None, b=None, a_raw=None, b_raw=None):
     dst = _ensure_dst_key(dst)
-    crypto.decodeint_into_noreduce(_tmp_sc_1, a)
+    if a:
+        crypto.decodeint_into_noreduce(_tmp_sc_1, a)
     if b:
         crypto.decodeint_into_noreduce(_tmp_sc_2, b)
-    crypto.sc_mul_into(_tmp_sc_3, _tmp_sc_1, _tmp_sc_2 if b else b_raw)
+    crypto.sc_mul_into(_tmp_sc_3, _tmp_sc_1 if a else a_raw, _tmp_sc_2 if b else b_raw)
     crypto.encodeint_into(dst, _tmp_sc_3)
     return dst
 
@@ -315,7 +320,7 @@ class KeyVBase:
         return KeyVSliced(self, start, stop)
 
 
-_CHBITS = const(5)
+_CHBITS = const(11)
 _CHSIZE = const(1 << _CHBITS)
 
 
@@ -698,6 +703,18 @@ class KeyVPowers(KeyVBase):
         else:
             raise IndexError("Only linear scan allowed: %s, %s" % (prev, item))
 
+    def reset(self):
+        return self[0]
+
+    def rewind(self, n):
+        while n > 0:
+            if not self.raw:
+                _sc_mul(self.cur, self.cur, self.x)
+            else:
+                crypto.sc_mul_into(self.cur, self.cur, self.x)
+            self.last_idx += 1
+            n -= 1
+
     def set_state(self, idx, val):
         self.item = idx
         self.last_idx = idx
@@ -869,6 +886,24 @@ def _const_vector(val, elems=_BP_N, copy=True):
     return KeyVConst(elems, val, copy)
 
 
+def _vector_sum_aA(dst, a, A, a_raw=None):
+    """
+    \sum_{i=0}^{|A|}  a_i A_i
+    """
+    dst = _ensure_dst_key(dst)
+    crypto.identity_into(_tmp_pt_2)
+
+    for i in range(len(a or a_raw)):
+        if a:
+            crypto.decodeint_into_noreduce(_tmp_sc_1, a.to(i))
+        crypto.decodepoint_into(_tmp_pt_3, A.to(i))
+        crypto.scalarmult_into(_tmp_pt_1, _tmp_pt_3, _tmp_sc_1)
+        crypto.point_add_into(_tmp_pt_2, _tmp_pt_2, _tmp_pt_1)
+        _gc_iter(i)
+    crypto.encodepoint_into(dst, _tmp_pt_2)
+    return dst
+
+
 def _vector_exponent_custom(A, B, a, b, dst=None, a_raw=None, b_raw=None):
     """
     \\sum_{i=0}^{|A|}  a_i A_i + b_i B_i
@@ -977,6 +1012,7 @@ def _hadamard_fold(v, a, b, into=None, into_offset=0, vR=None, vRoff=0):
     for i in range(h):
         crypto.decodepoint_into(_tmp_pt_1, v.to(i))
         crypto.decodepoint_into(_tmp_pt_2, v.to(h + i) if not vR else vR.to(i + vRoff))
+        #print(' ... ', ubinascii.hexlify(crypto.encodepoint(_tmp_pt_1)), ubinascii.hexlify(crypto.encodepoint(_tmp_pt_2)))
         crypto.add_keys3_into(_tmp_pt_3, _tmp_sc_1, _tmp_pt_1, _tmp_sc_2, _tmp_pt_2)
         crypto.encodepoint_into(_tmp_bf_0, _tmp_pt_3)
         into.read(i + into_offset, _tmp_bf_0)
@@ -1178,6 +1214,78 @@ class BulletProofBuilder:
         self.gc_fnc = gc.collect
         self.gc_trace = None
 
+        self.batching = 32
+        self.offload = False
+        self.off_method = 0
+        self.nprime_thresh = 32
+
+        self.MN = 1
+        self.M = 1
+        self.logMN = 1
+        self.gamma = None
+        self.V = None
+        self.A = None
+        self.S = None
+        self.T1 = None
+        self.T2 = None
+        self.tau1 = None
+        self.tau2 = None
+        self.taux = None
+        self.mu = None
+        self.t = None
+        self.ts = None
+        self.x = None
+        self.x_ip = None
+        self.y = None
+        self.z = None
+        self.zc = None
+        self.l = None
+        self.r = None
+        self.hash_cache = None
+        self.l0 = None
+        self.l1 = None
+        self.r0 = None
+        self.r1 = None
+        self.nprime = None
+        self.round = 0
+        self.rho = None
+        self.alpha = None
+        self.Gprec2 = None
+        self.Hprec2 = None
+        self.aprime = None
+        self.bprime = None
+        self.Gprime = None
+        self.Hprime = None
+        self.L = None
+        self.R = None
+        self.w_round = None
+        self.winv = None
+        self.cL = None
+        self.cR = None
+        self.LcA = None
+        self.LcB = None
+        self.RcA = None
+        self.RcB = None
+        self._tmp_k_1 = None
+        self.yinvpowL = None
+        self.yinvpowR = None
+        self.tmp_pt = None
+        self.HprimeL = None
+        self.HprimeR = None
+        self.a = None
+        self.b = None
+
+        self.offstate = 0
+        self.offpos = 0
+        self.bl0 = None
+        self.bl1 = None
+        self.bl2 = None
+        self.bl3 = None
+        self.bl0N = None
+        self.bl1N = None
+        self.bl2N = None
+        self.bl3N = None
+
     def gc(self, *args):
         if self.gc_trace:
             self.gc_trace(*args)
@@ -1247,7 +1355,7 @@ class BulletProofBuilder:
 
     def sL_vct(self, ln=_BP_N):
         return (
-            KeyVPrngMask(ln, crypto.random_bytes(32))
+            KeyVPrngMask(ln, _ZERO) #crypto.random_bytes(32))
             # KeyVEval(ln, lambda i, dst: self._det_mask(i, True, dst))
             if self.use_det_masks
             else self.sX_gen(ln)
@@ -1255,7 +1363,7 @@ class BulletProofBuilder:
 
     def sR_vct(self, ln=_BP_N):
         return (
-            KeyVPrngMask(ln, crypto.random_bytes(32))
+            KeyVPrngMask(ln, _ONE) #crypto.random_bytes(32))
             # KeyVEval(ln, lambda i, dst: self._det_mask(i, False, dst))
             if self.use_det_masks
             else self.sX_gen(ln)
@@ -1267,6 +1375,8 @@ class BulletProofBuilder:
         buff_mv = memoryview(buff)
         sc = crypto.new_scalar()
         for i in range(ln):
+            buff0 = PRNG.next(32, bytearray(32))
+            crypto.decodeint_into(sc, buff0)
             crypto.random_scalar(sc)
             crypto.encodeint_into(buff_mv[i * 32 : (i + 1) * 32], sc)
             _gc_iter(i)
@@ -1282,7 +1392,7 @@ class BulletProofBuilder:
         utils.ensure(len(sv) == len(gamma), "|sv| != |gamma|")
         utils.ensure(len(sv) > 0, "sv empty")
 
-        self.proof_sec = crypto.random_bytes(64)
+        self.proof_sec = "\x00"*32  #crypto.random_bytes(64)
         self._det_mask_init()
         gc.collect()
         sv = [crypto.encodeint(x) for x in sv]
@@ -1314,6 +1424,40 @@ class BulletProofBuilder:
             if r[0]:
                 break
         return r[1]
+
+    def prove_batch_off(self, sv, gamma):
+        M, logM, aL, aR, V, gamma = self.prove_setup(sv, gamma)
+        hash_cache = _ensure_dst_key()
+
+        logMN = logM + _BP_LOG_N
+        MN = M * _BP_N
+        _hash_vct_to_scalar(hash_cache, V)
+
+        # Extended precomputed GiHi
+        Gprec = self._gprec_aux(MN)
+        Hprec = self._hprec_aux(MN)
+        self.offload = True
+        return self._prove_phase1(
+            _BP_N, M, logMN, V, gamma, aL, aR, hash_cache, Gprec, Hprec
+        )
+
+    def prove_batch_off_step(self, buffers=None):
+        if self.offstate == 0:
+            return self.phase1_lr()
+        elif self.offstate == 1:
+            return self.phase1_post()
+        elif self.offstate == 2:
+            return self._phase2_loop_offdot(buffers)
+        elif self.offstate in [3, 4, 5, 6]:
+            return self._phase2_loop_fold(buffers)
+        elif self.offstate in [20, 21, 22, 23, 24, 25]:
+            return self._phase2_loop0_clcr(buffers)
+        elif self.offstate == 10:
+            return self._phase2_loop_full()
+        elif self.offstate == 12:
+            return self._phase2_final()
+        else:
+            raise ValueError('Internal state error')
 
     def _prove_batch_main(self, V, gamma, aL, aR, hash_cache, logM, logN, M, N):
         logMN = logM + logN
@@ -1423,185 +1567,647 @@ class BulletProofBuilder:
         if x == _ZERO:
             return (0,)
 
+        # Offloading patch - use the local state
+        self.M, self.MN, self.logMN = M, MN, logMN
+        self.V, self.A, self.S, self.T1, self.T2 = V, A, S, T1, T2
+        self.x, self.z, self.y, self.hash_cache = x, z, y, hash_cache
+        self.tau1, self.tau2, self.gamma, self.zc = tau1, tau2, gamma, zc
+        self.rho, self.alpha = rho, alpha
+        self.Gprec2, self.Hprec2 = Gprec, Hprec
+
+        if self.offload:
+            self.l0, self.l1, self.r0, self.r1 = l0, l1, r0, r1
+            self.ts = crypto.new_scalar()
+            self._prove_new_blinds()
+            self.offstate = 0
+            self.offpos = 0
+            return self.phase1_lr()
+
+            # t = crypto.encodeint(ts)
+            # del (l0, l1, sL, sR, r0, r1, ypow, ts)
+
+        # NOT OFFLOADED part
         # Second pass, compute l, r
         # Offloaded version does this incrementally and produces l, r outs in chunks
         # Message offloaded sends blinded vectors with random constants.
         #  - $l_i = l_{0,i} + xl_{1,i}
         #  - $r_i = r_{0,i} + xr_{1,i}
         #  - $t   = l . r$
-        l = _ensure_dst_keyvect(None, MN)
-        r = _ensure_dst_keyvect(None, MN)
+        self.l = _ensure_dst_keyvect(None, MN)
+        self.r = _ensure_dst_keyvect(None, MN)
         ts = crypto.new_scalar()
         for i in range(MN):
             _sc_muladd(_tmp_bf_0, x, l1.to(i), l0.to(i))
-            l.read(i, _tmp_bf_0)
+            self.l.read(i, _tmp_bf_0)
 
             _sc_muladd(_tmp_bf_1, x, r1.to(i), r0.to(i))
-            r.read(i, _tmp_bf_1)
+            self.r.read(i, _tmp_bf_1)
 
             _sc_muladd(ts, _tmp_bf_0, _tmp_bf_1, None, c_raw=ts, raw=True)
 
-        t = crypto.encodeint(ts)
+        self.t = crypto.encodeint(ts)
         del (l0, l1, sL, sR, r0, r1, ypow, ts)
         self.gc(17)
 
-        # PAPER LINES 52-53, Compute \tau_x
-        taux = _ensure_dst_key()
-        _sc_mul(taux, tau1, x)
-        _sc_mul(_tmp_bf_0, x, x)
-        _sc_muladd(taux, tau2, _tmp_bf_0, taux)
-        del (tau1, tau2)
+        return self.phase1_post()
 
-        zpow = crypto.sc_mul_into(None, zc, zc)
-        for j in range(1, len(V) + 1):
-            _sc_muladd(taux, None, gamma[j - 1], taux, a_raw=zpow)
-            crypto.sc_mul_into(zpow, zpow, zc)
-        del (zc, zpow)
+    def phase1_lr(self):
+        """
+        Computes l, r vectors per chunks
+        """
+        print('Phase1_lr, state: %s, off: %s, MN: %s' % (self.offstate, self.offpos, self.MN))
+        l = KeyV(self.batching, bytearray(32 * self.batching))
+        r = KeyV(self.batching, bytearray(32 * self.batching))
+
+        for i in range(self.offpos, self.offpos + self.batching):
+            _sc_muladd(_tmp_bf_0, self.x, self.l1.to(i), self.l0.to(i))
+            _sc_muladd(_tmp_bf_1, self.x, self.r1.to(i), self.r0.to(i))
+            _sc_muladd(self.ts, _tmp_bf_0, _tmp_bf_1, None, c_raw=self.ts, raw=True)
+            _sc_mul(_tmp_bf_0, _tmp_bf_0, None, b_raw=self.bl0)  # blinding
+            _sc_mul(_tmp_bf_1, _tmp_bf_1, None, b_raw=self.bl1)  # blinding
+            l.read(i - self.offpos, _tmp_bf_0)
+            r.read(i - self.offpos, _tmp_bf_1)
+
+        self.offstate = 0
+        self.offpos += self.batching
+        if self.offpos >= self.MN:
+            self.t = crypto.encodeint(self.ts)
+            del(self.ts)
+            print('Moving to next state')
+            self.offstate = 1
+            self.offpos = 0
+
+        return l.d, r.d
+
+    def phase1_post(self):
+        """
+        Part after l, r, t are computed.
+        Offstate = 1
+        """
+        print('phase1_post, state: %s, off: %s' % (self.offstate, self.offpos))
+
+        # PAPER LINES 52-53, Compute \tau_x
+        self.taux = _ensure_dst_key()
+        _sc_mul(self.taux, self.tau1, self.x)
+        _sc_mul(_tmp_bf_0, self.x, self.x)
+        _sc_muladd(self.taux, self.tau2, _tmp_bf_0, self.taux)
+        del (self.tau1, self.tau2)
+
+        zpow = crypto.sc_mul_into(None, self.zc, self.zc)
+        for j in range(1, len(self.V) + 1):
+            _sc_muladd(self.taux, None, self.gamma[j - 1], self.taux, a_raw=zpow)
+            crypto.sc_mul_into(zpow, zpow, self.zc)
+        del (self.zc, zpow)
 
         self.gc(18)
-        mu = _ensure_dst_key()
-        _sc_muladd(mu, x, rho, alpha)
-        del (rho, alpha)
+        self.mu = _ensure_dst_key()
+        _sc_muladd(self.mu, self.x, self.rho, self.alpha)
+        del (self.rho, self.alpha)
         self.gc(19)
 
         # PAPER LINES 32-33
-        x_ip = _hash_cache_mash(None, hash_cache, x, taux, mu, t)
-        if x_ip == _ZERO:
+        self.x_ip = _hash_cache_mash(None, self.hash_cache, self.x, self.taux, self.mu, self.t)
+        if self.x_ip == _ZERO:
             return 0, None
 
-        return A, S, T1, T2, taux, mu, t, l, r, y, x_ip, hash_cache
+        print('x_ip: ', ubinascii.hexlify(self.x_ip))
+        # prepare for looping
+        self.offstate, self.offpos = 20, 0
+        self.round = 0
+        self.nprime = self.MN >> 1
+        print('MN: %s, nprime: %s' % (self.MN, self.nprime))
+        self.L = _ensure_dst_keyvect(None, self.logMN)
+        self.R = _ensure_dst_keyvect(None, self.logMN)
 
-    def _prove_loop(self, MN, logMN, l, r, y, x_ip, hash_cache, Gprec, Hprec):
-        nprime = MN
-        aprime = l
-        bprime = r
+        return self.A, self.S, self.T1, self.T2, self.taux, self.mu, self.t, self.l, self.r, self.y, self.x_ip, self.hash_cache
 
-        yinvpowL = KeyVPowers(MN, _invert(_tmp_bf_0, y), raw=True)
-        yinvpowR = KeyVPowers(MN, _tmp_bf_0, raw=True)
-        tmp_pt = crypto.new_point()
+    def _prove_new_blinds(self):
+        self.bl0 = crypto.random_scalar()
+        self.bl1 = crypto.random_scalar()
+        self.bl2 = crypto.random_scalar()
+        self.bl3 = crypto.random_scalar()
+        # self.bl0 = crypto.decodeint(_ONE)
+        # self.bl1 = crypto.decodeint(_ONE)
+        # self.bl2 = crypto.decodeint(_ONE)
+        # self.bl3 = crypto.decodeint(_ONE)
 
-        Gprime = Gprec
-        HprimeL = KeyVEval(
-            MN, lambda i, d: _scalarmult_key(d, Hprec.to(i), None, yinvpowL[i])
-        )
-        HprimeR = KeyVEval(
-            MN, lambda i, d: _scalarmult_key(d, Hprec.to(i), None, yinvpowR[i], tmp_pt)
-        )
-        Hprime = HprimeL
-        self.gc(20)
+    def _prove_new_blindsN(self):
+        self.bl0N = crypto.random_scalar()
+        self.bl1N = crypto.random_scalar()
+        self.bl2N = crypto.random_scalar()
+        self.bl3N = crypto.random_scalar()
+        # self.bl0N = crypto.decodeint(_ONE)
+        # self.bl1N = crypto.decodeint(_ONE)
+        # self.bl2N = crypto.decodeint(_ONE)
+        # self.bl3N = crypto.decodeint(_ONE)
 
-        L = _ensure_dst_keyvect(None, logMN)
-        R = _ensure_dst_keyvect(None, logMN)
-        cL = _ensure_dst_key()
-        cR = _ensure_dst_key()
-        winv = _ensure_dst_key()
-        w_round = _ensure_dst_key()
+    def _phase2_loop0_clcr(self, buffers):
+        """
+        Loop0 for offloaded operation.
+        Caller passes a[0..nprime], b[nprime..np2] in chunks
+        1 sub phase: a0, b1, G1, H0   - computes cL, Lc; state = 20
+        2 sub phase: a1, b0, G0, H1   - computes cR, Rc; state = 21
+        state 22, 23 = folding; G, H from the memory
+        state 24, 25 = folding a, b; maps to state 5, 6
+        """
+        print('phase2_loop0_clcr, state: %s, off: %s, round: %s, nprime: %s' % (self.offstate, self.offpos, self.round, self.nprime))
+        if self.Gprime is None:
+            self._phase2_loop_body_r0init()
+
+        if self.cL is None:
+            self.cL = _ensure_dst_key()
+            self.cR = _ensure_dst_key()
+            self.winv = _ensure_dst_key()
+            self.w_round = _ensure_dst_key()
+
+        if self.LcA is None:
+            crypto.identity_into(_tmp_pt_1)
+            self.LcA = bytearray(crypto.encodepoint(_tmp_pt_1))
+            self.LcB = bytearray(crypto.encodepoint(_tmp_pt_1))
+            self.RcA = bytearray(crypto.encodepoint(_tmp_pt_1))
+            self.RcB = bytearray(crypto.encodepoint(_tmp_pt_1))
+
+        a, b = KeyV(self.batching, buffers[0]), KeyV(self.batching, buffers[1])
+        G, H = None, None
+        if self.round == 0:
+            if self.offstate == 20:
+                H = KeyVSliced(self.Hprime, self.offpos, min(self.offpos + self.batching, self.nprime))
+                G = KeyVSliced(self.Gprime, self.nprime + self.offpos, self.nprime + min(self.offpos + self.batching, 2 * self.nprime))
+            else:
+                G = KeyVSliced(self.Gprime, self.offpos, min(self.offpos + self.batching, self.nprime))
+                H = KeyVSliced(self.Hprime, self.nprime + self.offpos, self.nprime + min(self.offpos + self.batching, 2 * self.nprime))
+        else:
+            G, H = KeyV(self.batching, buffers[2]), KeyV(self.batching, buffers[3])
+
+        cX = self.cL if self.offstate == 20 else self.cR
+        XcA = self.LcA if self.offstate == 20 else self.RcA
+        XcB = self.LcB if self.offstate == 20 else self.RcB
         tmp = _ensure_dst_key()
-        _tmp_k_1 = _ensure_dst_key()
-        round = 0
 
-        # PAPER LINE 13
-        while nprime > 1:
-            # PAPER LINE 15
-            npr2 = nprime
-            nprime >>= 1
-            self.gc(22)
+        print(len(a), len(b), len(G), len(H))
+        for i in range(len(a)):
+            _sc_muladd(cX, a.to(i), b.to(i), cX)  # cX dot product
 
-            # PAPER LINES 16-17
-            # cL = \ap_{\left(\inta\right)} \cdot \bp_{\left(\intb\right)}
-            # cR = \ap_{\left(\intb\right)} \cdot \bp_{\left(\inta\right)}
-            _inner_product(
-                aprime.slice_view(0, nprime), bprime.slice_view(nprime, npr2), cL
-            )
+            _scalarmult_key(tmp, G.to(i), a.to(i))  # XcA scalarmult
+            _add_keys(XcA, XcA, tmp)
 
-            _inner_product(
-                aprime.slice_view(nprime, npr2), bprime.slice_view(0, nprime), cR
-            )
-            self.gc(23)
+            _scalarmult_key(tmp, H.to(i), b.to(i))  # XcA scalarmult
+            _add_keys(XcB, XcB, tmp)
 
-            # PAPER LINES 18-19
-            # Lc = 8^{-1} \left(\left( \sum_{i=0}^{\np} \ap_{i}\quad\Gp_{i+\np} + \bp_{i+\np}\Hp_{i} \right)
-            # 		    + \left(c_L x_{ip}\right)H \right)
-            _vector_exponent_custom(
-                Gprime.slice_view(nprime, npr2),
-                Hprime.slice_view(0, nprime),
-                aprime.slice_view(0, nprime),
-                bprime.slice_view(nprime, npr2),
-                _tmp_bf_0,
-            )
+        self.offpos += min(len(a), self.batching)
+        if self.offpos >= self.nprime:# * 2:
+            print('offpos trigger')
+            # unblind cX
+            _sc_mul(tmp, a_raw=self.bl0, b_raw=self.bl1)
+            _invert(tmp, tmp)
+            _sc_mul(cX, cX, tmp)
 
-            # In round 0 backup the y^{prime - 1}
-            if round == 0:
-                yinvpowR.set_state(yinvpowL.last_idx, yinvpowL.cur)
+            # unblind XcA
+            _sc_mul(tmp, a_raw=self.bl0, b_raw=self.bl2 if self.round > 0 else crypto.decodeint(_ONE))
+            _invert(tmp, tmp)
+            _scalarmult_key(XcA, XcA, tmp)
 
-            _sc_mul(tmp, cL, x_ip)
-            _add_keys(_tmp_bf_0, _tmp_bf_0, _scalarmultH(_tmp_k_1, tmp))
-            _scalarmult_key(_tmp_bf_0, _tmp_bf_0, _INV_EIGHT)
-            L.read(round, _tmp_bf_0)
-            self.gc(24)
+            # unblind XcB
+            _sc_mul(tmp, a_raw=self.bl1, b_raw=self.bl3 if self.round > 0 else crypto.decodeint(_ONE))
+            _invert(tmp, tmp)
+            _scalarmult_key(XcB, XcB, tmp)
 
-            # Rc = 8^{-1} \left(\left( \sum_{i=0}^{\np} \ap_{i+\np}\Gp_{i}\quad + \bp_{i}\quad\Hp_{i+\np} \right)
-            #           + \left(c_R x_{ip}\right)H \right)
-            _vector_exponent_custom(
-                Gprime.slice_view(0, nprime),
-                Hprime.slice_view(nprime, npr2),
-                aprime.slice_view(nprime, npr2),
-                bprime.slice_view(0, nprime),
-                _tmp_bf_0,
-            )
+            if self.offstate == 20:  # Finish Lc
+                # print('x_ip: ', ubinascii.hexlify(self.x_ip))
+                # print('r: %s, cL ' % self.round, ubinascii.hexlify(self.cL))
+                _add_keys(_tmp_bf_0, self.LcA, self.LcB)
+                _sc_mul(tmp, self.cL, self.x_ip)
+                _add_keys(_tmp_bf_0, _tmp_bf_0, _scalarmultH(self._tmp_k_1, tmp))
+                _scalarmult_key(_tmp_bf_0, _tmp_bf_0, _INV_EIGHT)
+                self.L.read(self.round, _tmp_bf_0)
+                # print('r: %s, Lc ' % self.round, ubinascii.hexlify(self.L.to(self.round)))
 
-            _sc_mul(tmp, cR, x_ip)
-            _add_keys(_tmp_bf_0, _tmp_bf_0, _scalarmultH(_tmp_k_1, tmp))
-            _scalarmult_key(_tmp_bf_0, _tmp_bf_0, _INV_EIGHT)
-            R.read(round, _tmp_bf_0)
-            self.gc(25)
+            elif self.offstate == 21:  # finish Rc, w
+                # print('x_ip: ', ubinascii.hexlify(self.x_ip))
+                # print('r: %s, cR ' % self.round, ubinascii.hexlify(self.cR))
+                _add_keys(_tmp_bf_0, self.RcA, self.RcB)
+                _sc_mul(tmp, self.cR, self.x_ip)
+                _add_keys(_tmp_bf_0, _tmp_bf_0, _scalarmultH(self._tmp_k_1, tmp))
+                _scalarmult_key(_tmp_bf_0, _tmp_bf_0, _INV_EIGHT)
+                self.R.read(self.round, _tmp_bf_0)
+                # print('r: %s, Rc ' % self.round, ubinascii.hexlify(self.R.to(self.round)))
 
-            # PAPER LINES 21-22
-            _hash_cache_mash(w_round, hash_cache, L.to(round), R.to(round))
-            if w_round == _ZERO:
-                return (0,)
+                # PAPER LINES 21-22
+                _hash_cache_mash(self.w_round, self.hash_cache, self.L.to(self.round), self.R.to(self.round))
+                if self.w_round == _ZERO:
+                    return (0,)
 
-            # PAPER LINES 24-25, fold {G~, H~}
-            _invert(winv, w_round)
-            self.gc(26)
+                # PAPER LINES 24-25, fold {G~, H~}
+                _invert(self.winv, self.w_round)
+                self.gc(26)
+                # print('r: %s, w0 ' % self.round, ubinascii.hexlify(self.w_round))
+                # print('r: %s, wi ' % self.round, ubinascii.hexlify(self.winv))
 
-            # PAPER LINES 28-29, fold {a, b} vectors
-            # aprime's high part is used as a buffer for other operations
-            _scalar_fold(aprime, w_round, winv)
-            aprime.resize(nprime)
-            self.gc(27)
-
-            _scalar_fold(bprime, winv, w_round)
-            bprime.resize(nprime)
-            self.gc(28)
-
-            # First fold produced to a new buffer, smaller one (G~ on-the-fly)
-            Gprime_new = KeyV(nprime) if round == 0 else Gprime
-            Gprime = _hadamard_fold(Gprime, winv, w_round, Gprime_new, 0)
-            Gprime.resize(nprime)
-            self.gc(30)
-
-            # Hadamard fold for H is special - linear scan only.
-            # Linear scan is slow, thus we have HprimeR.
-            if round == 0:
-                Hprime_new = KeyV(nprime)
-                Hprime = _hadamard_fold(
-                    Hprime, w_round, winv, Hprime_new, 0, HprimeR, nprime
-                )
-                # Hprime = _hadamard_fold_linear(Hprime, w_round, winv, Hprime_new, 0)
+                # New blinding factors to use for newly folded vectors
+                self._prove_new_blindsN()
 
             else:
-                _hadamard_fold(Hprime, w_round, winv)
-                Hprime.resize(nprime)
+                raise ValueError('Invalid state: %s' % self.offstate)
 
-            if round == 0:
-                # del (Gprec, Hprec, yinvpowL, HprimeL)
-                del (Gprec, Hprec, yinvpowL, yinvpowR, HprimeL, HprimeR, tmp_pt)
+            self.offpos = 0
+            self.offstate += 1
+            print('Moved to state ', self.offstate)
 
+        if self.offstate >= 22:
+            print('Move to state 3')
+            self.offstate = 3
+
+    def _phase2_loop_offdot(self, buffers):
+        """
+        Comp computes dot products, blinded, de-blind
+        Computes cL, cR, Lc, Rc, w
+        Offstate = 2
+        """
+        print('_phase2_loop_offdot, state: %s, off: %s, round: %s, nprime: %s' % (self.offstate, self.offpos, self.round, self.nprime))
+        tmp = _ensure_dst_key()
+        self._tmp_k_1 = _ensure_dst_key()
+
+        cL, cR = buffers[0], buffers[1]
+        LcA, LcB = buffers[2], buffers[3]
+        RcA, RcB = buffers[4], buffers[5]
+
+        ibl0 = _invert(None, crypto.encodeint(self.bl0))  # a
+        ibl1 = _invert(None, crypto.encodeint(self.bl1))  # b
+        ibl2 = _invert(None, crypto.encodeint(self.bl2))  # G
+        ibl3 = _invert(None, crypto.encodeint(self.bl3))  # H
+
+        cL = _sc_mul(cL, cL, ibl0)
+        cL = _sc_mul(cL, cL, ibl1)
+
+        cR = _sc_mul(cR, cR, ibl0)
+        cR = _sc_mul(cR, cR, ibl1)
+
+        # print('r: %s, cL ' % self.round, ubinascii.hexlify(cL))
+        # print('r: %s, cR ' % self.round, ubinascii.hexlify(cR))
+
+        LcA = _scalarmult_key(LcA, LcA, _sc_mul(None, ibl0, ibl2))
+        RcA = _scalarmult_key(RcA, RcA, _sc_mul(None, ibl0, ibl2))
+
+        LcB = _scalarmult_key(LcB, LcB, _sc_mul(None, ibl1, ibl3))
+        RcB = _scalarmult_key(RcB, RcB, _sc_mul(None, ibl1, ibl3))
+
+        _add_keys(_tmp_bf_0, LcA, LcB)
+        _sc_mul(tmp, cL, self.x_ip)
+        _add_keys(_tmp_bf_0, _tmp_bf_0, _scalarmultH(self._tmp_k_1, tmp))
+        _scalarmult_key(_tmp_bf_0, _tmp_bf_0, _INV_EIGHT)
+        self.L.read(self.round, _tmp_bf_0)
+
+        _add_keys(_tmp_bf_0, RcA, RcB)
+        _sc_mul(tmp, cR, self.x_ip)
+        _add_keys(_tmp_bf_0, _tmp_bf_0, _scalarmultH(self._tmp_k_1, tmp))
+        _scalarmult_key(_tmp_bf_0, _tmp_bf_0, _INV_EIGHT)
+        self.R.read(self.round, _tmp_bf_0)
+
+        # print('r: %s, Lc ' % self.round, ubinascii.hexlify(self.L.to(self.round)))
+        # print('r: %s, Rc ' % self.round, ubinascii.hexlify(self.R.to(self.round)))
+
+        # PAPER LINES 21-22
+        _hash_cache_mash(self.w_round, self.hash_cache, self.L.to(self.round), self.R.to(self.round))
+        if self.w_round == _ZERO:
+            return (0,)
+
+        # PAPER LINES 24-25, fold {G~, H~}
+        _invert(self.winv, self.w_round)
+        self.gc(26)
+
+        # print('r: %s, w0 ' % self.round, ubinascii.hexlify(self.w_round))
+        # print('r: %s, w1 ' % self.round, ubinascii.hexlify(self.winv))
+
+        # New blinding factors to use for newly folded vectors
+        self._prove_new_blindsN()
+
+        self.offstate, self.offpos = 3, 0
+
+    def _phase2_loop_fold(self, buffers):
+        """
+        Computes folding per partes
+        """
+        print('phase2_loop_fold, state: %s, off: %s, round: %s, nprime: %s' % (self.offstate, self.offpos, self.round, self.nprime))
+        tgt = min(self.batching, self.nprime)
+        fld = KeyV(tgt, bytearray(32 * tgt))
+
+        lo, hi = None, None
+        if self.round == 0 and self.offstate in (3, 4):  # in-memory G, H; empty buffers
+            if self.offpos == 0 and self.offstate == 4:
+                self.yinvpowR.reset()
+                self.yinvpowR.rewind(self.nprime)
+
+            if self.offstate == 3:
+                lo = KeyVSliced(self.Gprime, self.offpos, min(self.offpos + self.batching, self.nprime))
+                hi = KeyVSliced(self.Gprime, self.nprime + self.offpos, self.nprime + min(self.offpos + self.batching, 2 * self.nprime))
+            else:
+                lo = KeyVSliced(self.HprimeL, self.offpos, min(self.offpos + self.batching, self.nprime))
+                hi = KeyVSliced(self.HprimeR, self.nprime + self.offpos, self.nprime + min(self.offpos + self.batching, 2 * self.nprime))
+
+        else:
+            lo, hi = KeyV(len(buffers[0])//32, buffers[0]), KeyV(len(buffers[1])//32, buffers[1])
+
+        inmem = self.nprime <= self.nprime_thresh
+        if inmem:
+            print('INMEM')
+
+        blinv = None
+        nbli  = None
+
+        if self.offstate == 3:  # G
+            blinv = _invert(None, crypto.encodeint(self.bl2))
+            if inmem: self.Gprime = fld
+            else: nbli = self.bl2N
+
+        elif self.offstate == 4:  # H
+            blinv = _invert(None, crypto.encodeint(self.bl3))
+            if inmem: self.Hprime = fld
+            else: nbli = self.bl3N
+
+        elif self.offstate == 5:  # a
+            blinv = _invert(None, crypto.encodeint(self.bl0))
+            if inmem: self.aprime = fld
+            else: nbli = self.bl0N
+
+        elif self.offstate == 6:  # b
+            blinv = _invert(None, crypto.encodeint(self.bl1))
+            if inmem: self.bprime = fld
+            else: nbli = self.bl1N
+
+        if self.round == 0 and self.offstate in [3, 4]:
+            blinv = _ONE  # no blinding for in-memory Gprime, Hprime in the round 0
+
+        tw0 = _sc_mul(None, self.w_round, blinv)
+        twi = _sc_mul(None, self.winv, blinv)
+
+        if self.offstate in [3, 6]:
+            crypto.decodeint_into_noreduce(_tmp_sc_1, twi)
+            crypto.decodeint_into_noreduce(_tmp_sc_2, tw0)
+        elif self.offstate in [4, 5]:
+            crypto.decodeint_into_noreduce(_tmp_sc_1, tw0)
+            crypto.decodeint_into_noreduce(_tmp_sc_2, twi)
+
+        print('.. tgt: %s, lo: %s, hi: %s' % (tgt, len(lo), len(hi)))
+        if self.offstate in [3, 4]:  # G, H
+            for i in range(0, tgt):
+                crypto.decodepoint_into(_tmp_pt_1, lo.to(i))
+                crypto.decodepoint_into(_tmp_pt_2, hi.to(i))
+                crypto.add_keys3_into(_tmp_pt_3, _tmp_sc_1, _tmp_pt_1, _tmp_sc_2, _tmp_pt_2)
+                if nbli: crypto.scalarmult_into(_tmp_pt_3, _tmp_pt_3, nbli)  # blind again
+                crypto.encodepoint_into(_tmp_bf_0, _tmp_pt_3)
+                fld.read(i, _tmp_bf_0)
+                _gc_iter(i)
+
+        elif self.offstate in [5, 6]:  # a, b
+            for i in range(0, tgt):
+                crypto.decodeint_into_noreduce(_tmp_sc_3, lo.to(i))
+                crypto.decodeint_into_noreduce(_tmp_sc_4, hi.to(i))
+                crypto.sc_mul_into(_tmp_sc_3, _tmp_sc_3, _tmp_sc_1)
+                crypto.sc_mul_into(_tmp_sc_4, _tmp_sc_4, _tmp_sc_2)
+                crypto.sc_add_into(_tmp_sc_3, _tmp_sc_3, _tmp_sc_4)
+                if nbli: crypto.sc_mul_into(_tmp_sc_3, _tmp_sc_3, nbli)  # blind again
+                crypto.encodeint_into(_tmp_bf_0, _tmp_sc_3)
+                fld.read(i, _tmp_bf_0)
+                _gc_iter(i)
+
+        # State transition
+        self.offpos += tgt
+        if self.offpos >= self.nprime:
+            self.offpos = 0
+            self.offstate += 1
+            print('Moved to state %s, npr %s' % (self.offstate, self.nprime))
+
+            if self.nprime == 1:
+                if self.offstate == 6:
+                    self.a = fld.to(0)
+
+                if self.offstate == 7:
+                    self.b = fld.to(0)
+                
+        if self.offstate >= 7:
+            self.nprime >>= 1
+            self.round += 1
+
+            if inmem:
+                self.offstate = 10  # finish in-memory, _phase2_loop_full
+
+            else:
+                self.offstate = 2   # another loop
+
+            print('Moved to state %s' % self.offstate)
+
+            # Rotate blindings
+            self.bl0 = self.bl0N
+            self.bl1 = self.bl1N
+            self.bl2 = self.bl2N
+            self.bl3 = self.bl3N
+
+        if self.nprime <= 0:
+            self.offstate = 12  # final, _phase2_final
+            print('Terminating')
+
+        return fld.d if not inmem else None
+
+    def _phase2_final(self):
+        from apps.monero.xmr.serialize_messages.tx_rsig_bulletproof import Bulletproof
+
+        return (
+            1,
+            Bulletproof(
+                V=self.V, A=self.A, S=self.S, T1=self.T1, T2=self.T2, taux=self.taux, mu=self.mu, L=self.L, R=self.R, a=self.a, b=self.b, t=self.t
+            ),
+        )
+
+    def _phase2_loop_full(self):
+        while self.nprime >= 1:
+            self._phase2_loop_body()
+        self.a = self.aprime.to(0)
+        self.b = self.bprime.to(0)
+        return self._phase2_final()
+
+    def _phase2_loop_body_r0init(self):
+        """
+        Initializes Gprime, HPrime for the round0
+        """
+        print('_phase2_loop_body_r0init, state: %s, off: %s' % (self.offstate, self.offpos))
+
+        self.yinvpowL = KeyVPowers(self.MN, _invert(_tmp_bf_0, self.y), raw=True)
+        self.yinvpowR = KeyVPowers(self.MN, _tmp_bf_0, raw=True)
+        self.tmp_pt = crypto.new_point()
+
+        self.Gprime = self.Gprec2
+        self.HprimeL = KeyVEval(
+            self.MN, lambda i, d: _scalarmult_key(d, self.Hprec2.to(i), None, self.yinvpowL[i])
+        )
+
+        self.HprimeR = KeyVEval(
+            self.MN, lambda i, d: _scalarmult_key(d, self.Hprec2.to(i), None, self.yinvpowR[i], self.tmp_pt)
+        )
+        self.Hprime = self.HprimeL
+
+    def _phase2_loop_body(self):
+        """
+        One loop for the prover loop.
+        Assumes nprime = MN/2 on the beginning.
+        """
+        print('_phase2_loop_body, state: %s, off: %s' % (self.offstate, self.offpos))
+        print('wloop: M: %s, r: %s, nprime: %s' % (self.M, self.round, self.nprime))
+
+        if self.round == 0 and (self.Gprime is None or len(self.Gprime) != 2*self.nprime):
+            self._phase2_loop_body_r0init()
+
+        if self.cL is None:
+            self.cL = _ensure_dst_key()
+            self.cR = _ensure_dst_key()
+
+        # PAPER LINE 15
+        nprime = self.nprime
+        npr2 = self.nprime * 2
+        cL = self.cL
+        cR = self.cR
+        self.tmp = _ensure_dst_key()
+        self.gc(22)
+
+        # PAPER LINES 16-17
+        # cL = \ap_{\left(\inta\right)} \cdot \bp_{\left(\intb\right)}
+        # cR = \ap_{\left(\intb\right)} \cdot \bp_{\left(\inta\right)}
+        _inner_product(
+            self.aprime.slice_view(0, nprime), self.bprime.slice_view(nprime, npr2), cL
+        )
+
+        _inner_product(
+            self.aprime.slice_view(nprime, npr2), self.bprime.slice_view(0, nprime), cR
+        )
+        # print('r: %s, cL ' % self.round, ubinascii.hexlify(cL))
+        # print('r: %s, cR ' % self.round, ubinascii.hexlify(cR))
+        self.gc(23)
+
+        # PAPER LINES 18-19
+        # Lc = 8^{-1} \left(\left( \sum_{i=0}^{\np} \ap_{i}\quad\Gp_{i+\np} + \bp_{i+\np}\Hp_{i} \right)
+        # 		    + \left(c_L x_{ip}\right)H \right)
+        _vector_exponent_custom(
+            self.Gprime.slice_view(nprime, npr2),
+            self.Hprime.slice_view(0, nprime),
+            self.aprime.slice_view(0, nprime),
+            self.bprime.slice_view(nprime, npr2),
+            _tmp_bf_0,
+        )
+
+        # In round 0 backup the y^{prime - 1}
+        if self.round == 0:
+            self.yinvpowR.set_state(self.yinvpowL.last_idx, self.yinvpowL.cur)
+
+        _sc_mul(self.tmp, cL, self.x_ip)
+        _add_keys(_tmp_bf_0, _tmp_bf_0, _scalarmultH(self._tmp_k_1, self.tmp))
+        _scalarmult_key(_tmp_bf_0, _tmp_bf_0, _INV_EIGHT)
+        self.L.read(self.round, _tmp_bf_0)
+        self.gc(24)
+
+        # Rc = 8^{-1} \left(\left( \sum_{i=0}^{\np} \ap_{i+\np}\Gp_{i}\quad + \bp_{i}\quad\Hp_{i+\np} \right)
+        #           + \left(c_R x_{ip}\right)H \right)
+        _vector_exponent_custom(
+            self.Gprime.slice_view(0, nprime),
+            self.Hprime.slice_view(nprime, npr2),
+            self.aprime.slice_view(nprime, npr2),
+            self.bprime.slice_view(0, nprime),
+            _tmp_bf_0,
+        )
+
+        _sc_mul(self.tmp, cR, self.x_ip)
+        _add_keys(_tmp_bf_0, _tmp_bf_0, _scalarmultH(self._tmp_k_1, self.tmp))
+        _scalarmult_key(_tmp_bf_0, _tmp_bf_0, _INV_EIGHT)
+        self.R.read(self.round, _tmp_bf_0)
+        self.gc(25)
+
+        # print('r: %s, Lc ' % self.round, ubinascii.hexlify(self.L.to(self.round)))
+        # print('r: %s, Rc ' % self.round, ubinascii.hexlify(self.R.to(self.round)))
+
+        # PAPER LINES 21-22
+        _hash_cache_mash(self.w_round, self.hash_cache, self.L.to(self.round), self.R.to(self.round))
+        if self.w_round == _ZERO:
+            return (0,)
+
+        # PAPER LINES 24-25, fold {G~, H~}
+        _invert(self.winv, self.w_round)
+        self.gc(26)
+
+        # print('r: %s, w0 ' % self.round, ubinascii.hexlify(self.w_round))
+        # print('r: %s, wi ' % self.round, ubinascii.hexlify(self.winv))
+
+        # PAPER LINES 28-29, fold {a, b} vectors
+        # aprime's high part is used as a buffer for other operations
+        _scalar_fold(self.aprime, self.w_round, self.winv)
+        self.aprime.resize(nprime)
+        self.gc(27)
+
+        _scalar_fold(self.bprime, self.winv, self.w_round)
+        self.bprime.resize(nprime)
+        self.gc(28)
+
+        # First fold produced to a new buffer, smaller one (G~ on-the-fly)
+        Gprime_new = KeyV(nprime) if self.round == 0 else self.Gprime
+        self.Gprime = _hadamard_fold(self.Gprime, self.winv, self.w_round, Gprime_new, 0)
+        self.Gprime.resize(nprime)
+        self.gc(30)
+
+        # Hadamard fold for H is special - linear scan only.
+        # Linear scan is slow, thus we have HprimeR.
+        if self.round == 0:
+            Hprime_new = KeyV(nprime)
+            self.Hprime = _hadamard_fold(
+                self.Hprime, self.w_round, self.winv, Hprime_new, 0, self.HprimeR, nprime
+            )
+            # Hprime = _hadamard_fold_linear(Hprime, w_round, winv, Hprime_new, 0)
+
+        else:
+            _hadamard_fold(self.Hprime, self.w_round, self.winv)
+            self.Hprime.resize(nprime)
+
+        # print('r: %s, ap ' % self.round, ubinascii.hexlify(self.aprime.d[-64:]))
+        # print('r: %s, bp ' % self.round, ubinascii.hexlify(self.bprime.d[-64:]))
+        # print('r: %s, Gp ' % self.round, ubinascii.hexlify(self.Gprime.d[-64:]))
+        # print('r: %s, Hp ' % self.round, ubinascii.hexlify(self.Hprime.d[-64:]))
+
+        if self.round == 0:
+            # del (Gprec, Hprec, yinvpowL, HprimeL)
+            del (self.Gprec2, self.Hprec2, self.yinvpowL, self.yinvpowR, self.HprimeL, self.HprimeR, self.tmp_pt)
+
+        self.gc(31)
+        self.round += 1
+        self.nprime >>= 1
+
+    def _prove_loop(self, MN, logMN, l, r, y, x_ip, hash_cache, Gprec, Hprec):
+        """
+        Prover phase 2 - loop.
+        Used only for in-memory computations.
+        """
+        self.nprime = MN >> 1
+        self.aprime = l
+        self.bprime = r
+        self.hash_cache = hash_cache
+        self.x_ip = x_ip
+        self.y = y
+
+        self.Gprec2 = Gprec
+        self.Hprec2 = Hprec
+        self.gc(20)
+
+        self.L = _ensure_dst_keyvect(None, logMN)
+        self.R = _ensure_dst_keyvect(None, logMN)
+        self.cL = _ensure_dst_key()
+        self.cR = _ensure_dst_key()
+        self.winv = _ensure_dst_key()
+        self.w_round = _ensure_dst_key()
+        self.tmp = _ensure_dst_key()
+        self._tmp_k_1 = _ensure_dst_key()
+        self.round = 0
+
+        # PAPER LINE 13
+        while self.nprime >= 1:
+            self._phase2_loop_body()
             self.gc(31)
-            round += 1
 
-        return L, R, aprime.to(0), bprime.to(0)
+        return self.L, self.R, self.aprime.to(0), self.bprime.to(0)
 
     def verify(self, proof):
         return self.verify_batch([proof])

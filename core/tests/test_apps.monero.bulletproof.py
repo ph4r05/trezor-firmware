@@ -3,7 +3,7 @@ from common import *
 if not utils.BITCOIN_ONLY:
     from apps.monero.xmr import bulletproof as bp, crypto, monero
     from apps.monero.xmr.serialize_messages.tx_rsig_bulletproof import Bulletproof
-
+    import ubinascii
 
 @unittest.skipUnless(not utils.BITCOIN_ONLY, "altcoin")
 class TestMoneroBulletproof(unittest.TestCase):
@@ -288,90 +288,253 @@ class TestMoneroBulletproof(unittest.TestCase):
         )
         # fmt: on
 
-    def test_masks(self):
-        bpi = bp.BulletProofBuilder()
-        self.mask_consistency_check(bpi)
+    # def test_masks(self):
+    #     bpi = bp.BulletProofBuilder()
+    #     self.mask_consistency_check(bpi)
+    #
+    #     # Randomized masks
+    #     bpi.use_det_masks = False
+    #     self.mask_consistency_check(bpi)
+    #
+    # def test_verify(self):
+    #     bpi = bp.BulletProofBuilder()
+    #     self.assertTrue(bpi.verify(self.bproof_1()))
+    #     self.assertTrue(bpi.verify(self.bproof_2()))
+    #     self.assertTrue(bpi.verify(self.bproof_4()))
 
-        # Randomized masks
-        bpi.use_det_masks = False
-        self.mask_consistency_check(bpi)
-
-    def test_verify(self):
-        bpi = bp.BulletProofBuilder()
-        self.assertTrue(bpi.verify(self.bproof_1()))
-        self.assertTrue(bpi.verify(self.bproof_2()))
-        self.assertTrue(bpi.verify(self.bproof_4()))
-
-    def test_prove(self):
-        bpi = bp.BulletProofBuilder()
-        val = crypto.sc_init(123)
-        mask = crypto.sc_init(432)
-
-        bp_res = bpi.prove(val, mask)
-        bpi.verify(bp_res)
-
-    def test_prove_2(self):
-        bpi = bp.BulletProofBuilder()
-        val = crypto.sc_init((1 << 30) - 1 + 16)
-        mask = crypto.random_scalar()
-
-        bp_res = bpi.prove(val, mask)
-        bpi.verify(bp_res)
-
-    def test_verify_batch_1(self):
-        bpi = bp.BulletProofBuilder()
-        bpi.verify_batch([self.bproof_1()])
-        bpi.verify_batch([self.bproof_2()])
-        bpi.verify_batch([self.bproof_4()])
-        bpi.verify_batch([self.bproof_8()])
-        bpi.verify_batch([self.bproof_16()])
-        with self.assertRaises(Exception):
-            bpi.verify_batch([self.bproof_2_invalid()])
-        with self.assertRaises(Exception):
-            bpi.verify_batch([self.bproof_2_invalid()])
-
-    def test_prove_random_masks(self):
-        bpi = bp.BulletProofBuilder()
-        bpi.use_det_masks = False  # trully randomly generated mask vectors
-        val = crypto.sc_init((1 << 30) - 1 + 16)
-        mask = crypto.random_scalar()
-
-        bp_res = bpi.prove(val, mask)
-        bpi.verify(bp_res)
-
-    def ctest_multiexp(self):
-        scalars = [0, 1, 2, 3, 4, 99]
-        point_base = [0, 2, 4, 7, 12, 18]
-        scalar_sc = [crypto.sc_init(x) for x in scalars]
-        points = [crypto.scalarmult_base(crypto.sc_init(x)) for x in point_base]
-
-        muex = bp.MultiExp(scalars=[crypto.encodeint(x) for x in scalar_sc],
-                           point_fnc=lambda i, d: crypto.encodepoint(points[i]))
-
-        self.assertEqual(len(muex), len(scalars))
-        res = bp.multiexp(None, muex)
-        res2 = bp.vector_exponent_custom(
-            A=bp.KeyVEval(3, lambda i, d: crypto.encodepoint_into(crypto.scalarmult_base(crypto.sc_init(point_base[i])), d)),
-            B=bp.KeyVEval(3, lambda i, d: crypto.encodepoint_into(crypto.scalarmult_base(crypto.sc_init(point_base[3+i])), d)),
-            a=bp.KeyVEval(3, lambda i, d: crypto.encodeint_into(crypto.sc_init(scalars[i]), d),),
-            b=bp.KeyVEval(3, lambda i, d: crypto.encodeint_into(crypto.sc_init(scalars[i+3]), d)),
-        )
-        self.assertEqual(res, res2)
-
-    def test_prove_batch(self):
-        bpi = bp.BulletProofBuilder()
-        sv = [crypto.sc_init(123), crypto.sc_init(768)]
-        gamma = [crypto.sc_init(456), crypto.sc_init(901)]
-        proof = bpi.prove_batch(sv, gamma)
-        bpi.verify_batch([proof])
-
+    # def test_prove(self):
+    #     bpi = bp.BulletProofBuilder()
+    #     val = crypto.sc_init(123)
+    #     mask = crypto.sc_init(432)
+    #
+    #     bp_res = bpi.prove(val, mask)
+    #     bpi.verify(bp_res)
+    #
+    # def test_prove_2(self):
+    #     bpi = bp.BulletProofBuilder()
+    #     val = crypto.sc_init((1 << 30) - 1 + 16)
+    #     mask = crypto.random_scalar()
+    #
+    #     bp_res = bpi.prove(val, mask)
+    #     bpi.verify(bp_res)
+    #
+    # def test_verify_batch_1(self):
+    #     bpi = bp.BulletProofBuilder()
+    #     bpi.verify_batch([self.bproof_1()])
+    #     bpi.verify_batch([self.bproof_2()])
+    #     bpi.verify_batch([self.bproof_4()])
+    #     bpi.verify_batch([self.bproof_8()])
+    #     bpi.verify_batch([self.bproof_16()])
+    #     with self.assertRaises(Exception):
+    #         bpi.verify_batch([self.bproof_2_invalid()])
+    #     with self.assertRaises(Exception):
+    #         bpi.verify_batch([self.bproof_2_invalid()])
+    #
+    # def test_prove_random_masks(self):
+    #     bpi = bp.BulletProofBuilder()
+    #     bpi.use_det_masks = False  # trully randomly generated mask vectors
+    #     val = crypto.sc_init((1 << 30) - 1 + 16)
+    #     mask = crypto.random_scalar()
+    #
+    #     bp_res = bpi.prove(val, mask)
+    #     bpi.verify(bp_res)
+    #
+    # def ctest_multiexp(self):
+    #     scalars = [0, 1, 2, 3, 4, 99]
+    #     point_base = [0, 2, 4, 7, 12, 18]
+    #     scalar_sc = [crypto.sc_init(x) for x in scalars]
+    #     points = [crypto.scalarmult_base(crypto.sc_init(x)) for x in point_base]
+    #
+    #     muex = bp.MultiExp(scalars=[crypto.encodeint(x) for x in scalar_sc],
+    #                        point_fnc=lambda i, d: crypto.encodepoint(points[i]))
+    #
+    #     self.assertEqual(len(muex), len(scalars))
+    #     res = bp.multiexp(None, muex)
+    #     res2 = bp.vector_exponent_custom(
+    #         A=bp.KeyVEval(3, lambda i, d: crypto.encodepoint_into(crypto.scalarmult_base(crypto.sc_init(point_base[i])), d)),
+    #         B=bp.KeyVEval(3, lambda i, d: crypto.encodepoint_into(crypto.scalarmult_base(crypto.sc_init(point_base[3+i])), d)),
+    #         a=bp.KeyVEval(3, lambda i, d: crypto.encodeint_into(crypto.sc_init(scalars[i]), d),),
+    #         b=bp.KeyVEval(3, lambda i, d: crypto.encodeint_into(crypto.sc_init(scalars[i+3]), d)),
+    #     )
+    #     self.assertEqual(res, res2)
+    #
+    # def test_prove_batch(self):
+    #     bpi = bp.BulletProofBuilder()
+    #     sv = [crypto.sc_init(123), crypto.sc_init(768)]
+    #     gamma = [crypto.sc_init(456), crypto.sc_init(901)]
+    #     proof = bpi.prove_batch(sv, gamma)
+    #     bpi.verify_batch([proof])
+    #
     def test_prove_batch16(self):
+        bp.PRNG = crypto.prng(bp._ZERO)
         bpi = bp.BulletProofBuilder()
         sv = [crypto.sc_init(137*i) for i in range(16)]
         gamma = [crypto.sc_init(991*i) for i in range(16)]
         proof = bpi.prove_batch(sv, gamma)
+        print(proof)
+        # print(ubinascii.hexlify(proof.V.d))
+        # print(ubinascii.hexlify(proof.L.d))
+        # print(ubinascii.hexlify(proof.R.d))
         bpi.verify_batch([proof])
 
+    def prove_batch_off(self, ln):
+        bp.PRNG = crypto.prng(bp._ZERO)
+        bpi = bp.BulletProofBuilder()
+        sv = [crypto.sc_init(137*i) for i in range(ln)]
+        gamma = [crypto.sc_init(991*i) for i in range(ln)]
+
+        M = ln
+        MN = 64 * ln
+        batching = bpi.batching
+        l = bytearray()
+        r = bytearray()
+        aprime = l
+        bprime = r
+        print('Batching: %s, MN: %s, chunk size: %s' % (batching, MN, MN // batching))
+
+        l0, r0 = bpi.prove_batch_off(sv, gamma)
+        l += l0
+        r += r0
+
+        for i in range(1, MN // batching):
+            print('.. l, r: %s' % i)
+            l0, r0 = bpi.prove_batch_off_step(None)
+            l += l0
+            r += r0
+
+        print('l,r finished')
+        print('Phase 1 finishing: ', bpi.prove_batch_off_step(None))
+        print('Phase 1 finished')
+
+        # round 0 - aLow, bHigh
+        print('r0, aLow')
+        for i in range(MN // batching // 2):
+            ia0 = 32 * (i * batching)
+            ia1 = ia0 + 32 * batching
+            ib0 = 32 * (i * batching + MN // 2)
+            ib1 = ib0 + 32 * batching
+            print(' .. i: %s, %s:%s, %s:%s' % (i, ia0, ia1, ib0, ib1))
+            print(bpi.prove_batch_off_step((l[ia0:ia1], r[ib0:ib1])))
+
+        # round 0 - aHigh, bLow
+        print('r0, aHigh')
+        for i in range(MN // batching // 2):
+            ia0 = 32 * (i * batching + MN // 2)
+            ia1 = ia0 + 32 * batching
+            ib0 = 32 * (i * batching)
+            ib1 = ib0 + 32 * batching
+            print(' .. i: %s, %s:%s, %s:%s' % (i, ia0, ia1, ib0, ib1))
+            print(bpi.prove_batch_off_step((l[ia0:ia1], r[ib0:ib1])))
+
+        # round 0 folding, G, H, a, b
+        Gprime = bytearray()
+        Hprime = bytearray()
+        print('r0, fold G')
+        for i in range(MN // batching // 2):
+            cres = bpi.prove_batch_off_step(None)
+            if cres: Gprime += cres
+
+        print('r0, fold H')
+        for i in range(MN // batching // 2):
+            cres = bpi.prove_batch_off_step(None)
+            if cres: Hprime += cres
+
+        app = bytearray()
+        bpp = bytearray()
+        print('r0, fold a')
+        for i in range(MN // batching // 2):
+            ia0 = 32 * (i * batching)
+            ia1 = ia0 + 32 * batching
+            ib0 = 32 * (i * batching + MN // 2)
+            ib1 = ib0 + 32 * batching
+            cres = bpi.prove_batch_off_step((aprime[ia0:ia1], aprime[ib0:ib1]))
+            if cres: app += cres
+
+        print('r0, fold b')
+        for i in range(MN // batching // 2):
+            ia0 = 32 * (i * batching)
+            ia1 = ia0 + 32 * batching
+            ib0 = 32 * (i * batching + MN // 2)
+            ib1 = ib0 + 32 * batching
+            cres = bpi.prove_batch_off_step((bprime[ia0:ia1], bprime[ib0:ib1]))
+            if cres: bpp += cres
+
+        aprime = bp.KeyV(MN//2, app)
+        bprime = bp.KeyV(MN//2, bpp)
+        Gprime = bp.KeyV(MN//2, Gprime)
+        Hprime = bp.KeyV(MN//2, Hprime)
+        print('Alen: %s, blen: %s, gplen: %s, hplen: %s' % (len(aprime), len(bprime), len(Gprime), len(Hprime)))
+        # print('PC r: %s, ap ' % 0, ubinascii.hexlify(aprime.d[-64:]))
+        # print('PC r: %s, bp ' % 0, ubinascii.hexlify(bprime.d[-64:]))
+        # print('PC r: %s, Gp ' % 0, ubinascii.hexlify(Gprime.d[-64:]))
+        # print('PC r: %s, Hp ' % 0, ubinascii.hexlify(Hprime.d[-64:]))
+
+        # Loops:
+        # - clcr part, compute blinded cL, cR, LcA, LcB, RcA, RcB
+        while bpi.nprime >= bpi.nprime_thresh:
+            print('Client nprime: %s' % bpi.nprime)
+            nprime = bpi.nprime
+            npr2 = nprime * 2
+
+            cL = bp._inner_product(
+                aprime.slice_view(0, nprime), bprime.slice_view(nprime, npr2), None
+            )
+
+            cR = bp._inner_product(
+                aprime.slice_view(nprime, npr2), bprime.slice_view(0, nprime), None
+            )
+
+            LcA = bp._vector_sum_aA(None, aprime.slice_view(0, nprime), Gprime.slice_view(nprime, npr2))
+            LcB = bp._vector_sum_aA(None, bprime.slice_view(nprime, npr2), Hprime.slice_view(0, nprime))
+
+            RcA = bp._vector_sum_aA(None, aprime.slice_view(nprime, npr2), Gprime.slice_view(0, nprime))
+            RcB = bp._vector_sum_aA(None, bprime.slice_view(0, nprime), Hprime.slice_view(nprime, npr2))
+
+            print('clcr step, r %s' % bpi.round)
+            print(bpi.prove_batch_off_step((cL, cR, LcA, LcB, RcA, RcB)))
+
+            for ix, v in enumerate((Gprime, Hprime, aprime, bprime)):
+                print('Folding IX: %s, r %s' % (ix, bpi.round))
+                bf = v.d
+                nf = bytearray()
+                cbatching = min(batching, nprime)
+                for i in range(max(1, nprime // cbatching)):
+                    ia0 = 32 * (i * cbatching)
+                    ia1 = ia0 + 32 * cbatching
+                    ib0 = 32 * (i * cbatching + nprime)
+                    ib1 = ib0 + 32 * cbatching
+                    print(' .. i: %s, %s:%s, %s:%s' % (i, ia0, ia1, ib0, ib1))
+
+                    lo = bf[ia0:ia1]
+                    hi = bf[ib0:ib1]
+
+                    cres = bpi.prove_batch_off_step((lo, hi))
+                    if cres:
+                        nf += cres
+
+                nf = bp.KeyV(nprime//2, nf)
+                if ix == 0:
+                    Gprime = nf
+                elif ix == 1:
+                    Hprime = nf
+                elif ix == 2:
+                    aprime = nf
+                elif ix == 3:
+                    bprime = nf
+            # print('PC r: %s, ap ' % bpi.round, ubinascii.hexlify(aprime.d[-64:]))
+            # print('PC r: %s, bp ' % bpi.round, ubinascii.hexlify(bprime.d[-64:]))
+            # print('PC r: %s, Gp ' % bpi.round, ubinascii.hexlify(Gprime.d[-64:]))
+            # print('PC r: %s, Hp ' % bpi.round, ubinascii.hexlify(Hprime.d[-64:]))
+
+        rs, proof = bpi.prove_batch_off_step(None)
+        print('PROOF ', proof)
+        # print(ubinascii.hexlify(proof.V.d))
+        # print(ubinascii.hexlify(proof.L.d))
+        # print(ubinascii.hexlify(proof.R.d))
+        bpi.verify_batch([proof])
+
+    def test_prove_batch16_off(self):
+        self.prove_batch_off(16)
 
 if __name__ == "__main__":
     unittest.main()
