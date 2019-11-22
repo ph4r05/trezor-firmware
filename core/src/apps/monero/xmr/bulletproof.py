@@ -679,7 +679,7 @@ class KeyVPowers(KeyVBase):
             return (
                 _copy_key(self.cur, _ONE)
                 if not self.raw
-                else crypto.decodeint_into_noreduce(None, _ONE)
+                else crypto.decodeint_into_noreduce(self.cur, _ONE)
             )
         elif item == 1:
             return (
