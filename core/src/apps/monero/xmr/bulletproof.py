@@ -324,7 +324,7 @@ class KeyVBase:
         return KeyVSliced(self, start, stop)
 
 
-_CHBITS = const(13)
+_CHBITS = const(5)
 _CHSIZE = const(1 << _CHBITS)
 
 
@@ -2007,7 +2007,6 @@ class BulletProofBuilder:
             lo, hi = KeyV(len(buffers[0])//32, buffers[0]), KeyV(len(buffers[1])//32, buffers[1])
 
         # In memory caching from some point
-        utils.ensure(self.nprime_thresh <= KeyV.chunk_size(), "Threshold has to be lower than chunk size, or disable chunking")
         utils.ensure(self.off_method != 2 or self.off2_thresh <= self.nprime_thresh, "off2 threshold invalid")
         inmem = self.nprime <= self.nprime_thresh or (self.off_method == 2 and self.nprime <= self.off2_thresh)
         tgt = min(self.batching, self.nprime)
@@ -2019,7 +2018,7 @@ class BulletProofBuilder:
                 self.Xprime[self.offstate - 3] = fldS
             fld = KeyVSliced(self.Xprime[self.offstate - 3], self.offpos, min(self.offpos + self.batching, self.nprime))
         else:
-            fld = KeyV(tgt, bytearray(32 * tgt))
+            fld = KeyV(tgt)
 
         # Consider blinding by halves
         # Folding has 4 different blind masks

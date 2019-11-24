@@ -74,6 +74,16 @@ if not utils.BITCOIN_ONLY:
         v.resize(nprime)
         return v
 
+    def dechunk_res(buffers, exp_res=1):
+        if not buffers or not isinstance(buffers, list):
+            return buffers
+
+        ln = len(buffers)
+        cres = [bytearray() for _ in range(exp_res)]
+        for i in range(ln):
+            cres[i//(ln//exp_res)] += buffers[i]
+        return cres if exp_res > 1 else cres[0]
+
 
 @unittest.skipUnless(not utils.BITCOIN_ONLY, "altcoin")
 class TestMoneroBulletproof(unittest.TestCase):
@@ -500,12 +510,12 @@ class TestMoneroBulletproof(unittest.TestCase):
         bpp = bytearray()
         print('r0, fold G')
         for i in range(MN // batching // 2):
-            cres = bpi.prove_batch_off_step(None)
+            cres = dechunk_res(bpi.prove_batch_off_step(None))
             if cres: Gprime += cres
 
         print('r0, fold H')
         for i in range(MN // batching // 2):
-            cres = bpi.prove_batch_off_step(None)
+            cres = dechunk_res(bpi.prove_batch_off_step(None))
             if cres: Hprime += cres
 
         Gprime = bp.KeyV(MN//2, Gprime)
@@ -522,13 +532,13 @@ class TestMoneroBulletproof(unittest.TestCase):
             print('r0, fold a')
             for i in range(MN // batching // 2):
                 ia0, ia1, ib0, ib1 = comp_fold_idx(batching, MN // 2, i)
-                cres = bpi.prove_batch_off_step((aprime[ia0:ia1], aprime[ib0:ib1]))
+                cres = dechunk_res(bpi.prove_batch_off_step((aprime[ia0:ia1], aprime[ib0:ib1])))
                 if cres: app += cres
 
             print('r0, fold b')
             for i in range(MN // batching // 2):
                 ia0, ia1, ib0, ib1 = comp_fold_idx(batching, MN // 2, i)
-                cres = bpi.prove_batch_off_step((bprime[ia0:ia1], bprime[ib0:ib1]))
+                cres = dechunk_res(bpi.prove_batch_off_step((bprime[ia0:ia1], bprime[ib0:ib1])))
                 if cres: bpp += cres
 
             aprime = bp.KeyV(MN//2, app)
@@ -606,7 +616,7 @@ class TestMoneroBulletproof(unittest.TestCase):
                     lo = bf[ia0:ia1]
                     hi = bf[ib0:ib1]
 
-                    cres = bpi.prove_batch_off_step((lo, hi))
+                    cres = dechunk_res(bpi.prove_batch_off_step((lo, hi)))
                     if cres:
                         nf += cres
 
