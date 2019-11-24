@@ -324,7 +324,7 @@ class KeyVBase:
         return KeyVSliced(self, start, stop)
 
 
-_CHBITS = const(11)
+_CHBITS = const(13)
 _CHSIZE = const(1 << _CHBITS)
 
 
@@ -1228,7 +1228,7 @@ class BulletProofBuilder:
         # Message can contain multiple vectors.
         self.batching = 32
 
-        # 0 = full offload, no blinding, just encrypted dummy storage (NOT IMPLEMENTED)
+        # 0 = full offload, no blinding, just encrypted dummy storage
         # 1 = offload dot product, blinding (cL, cR, LcA, LcB, RcA, RcB)
         # 2 = offload dot product + folding.
         self.off_method = 0
@@ -1762,13 +1762,13 @@ class BulletProofBuilder:
         if self.Gprime is None:
             self._phase2_loop_body_r0init()
 
-        if self.cL is None:
+        if self.cL is None or (self.offstate == 20 and self.offpos == 0):
             self.cL = _ensure_dst_key()
             self.cR = _ensure_dst_key()
             self.winv = _ensure_dst_key()
             self.w_round = _ensure_dst_key()
 
-        if self.LcA is None:
+        if self.LcA is None or (self.offstate == 20 and self.offpos == 0):
             crypto.identity_into(_tmp_pt_1)
             self.LcA = bytearray(crypto.encodepoint(_tmp_pt_1))
             self.LcB = bytearray(crypto.encodepoint(_tmp_pt_1))
@@ -1827,23 +1827,23 @@ class BulletProofBuilder:
 
             if self.offstate == 20:  # Finish Lc
                 # print('x_ip: ', ubinascii.hexlify(self.x_ip))
-                # print('r: %s, cL ' % self.round, ubinascii.hexlify(self.cL))
+                print('r: %s, cL ' % self.round, ubinascii.hexlify(self.cL))
                 _add_keys(_tmp_bf_0, self.LcA, self.LcB)
                 _sc_mul(tmp, self.cL, self.x_ip)
                 _add_keys(_tmp_bf_0, _tmp_bf_0, _scalarmultH(self._tmp_k_1, tmp))
                 _scalarmult_key(_tmp_bf_0, _tmp_bf_0, _INV_EIGHT)
                 self.L.read(self.round, _tmp_bf_0)
-                # print('r: %s, Lc ' % self.round, ubinascii.hexlify(self.L.to(self.round)))
+                print('r: %s, Lc ' % self.round, ubinascii.hexlify(self.L.to(self.round)))
 
             elif self.offstate == 21:  # finish Rc, w
                 # print('x_ip: ', ubinascii.hexlify(self.x_ip))
-                # print('r: %s, cR ' % self.round, ubinascii.hexlify(self.cR))
+                print('r: %s, cR ' % self.round, ubinascii.hexlify(self.cR))
                 _add_keys(_tmp_bf_0, self.RcA, self.RcB)
                 _sc_mul(tmp, self.cR, self.x_ip)
                 _add_keys(_tmp_bf_0, _tmp_bf_0, _scalarmultH(self._tmp_k_1, tmp))
                 _scalarmult_key(_tmp_bf_0, _tmp_bf_0, _INV_EIGHT)
                 self.R.read(self.round, _tmp_bf_0)
-                # print('r: %s, Rc ' % self.round, ubinascii.hexlify(self.R.to(self.round)))
+                print('r: %s, Rc ' % self.round, ubinascii.hexlify(self.R.to(self.round)))
 
                 # PAPER LINES 21-22
                 _hash_cache_mash(self.w_round, self.hash_cache, self.L.to(self.round), self.R.to(self.round))
@@ -1853,8 +1853,8 @@ class BulletProofBuilder:
                 # PAPER LINES 24-25, fold {G~, H~}
                 _invert(self.winv, self.w_round)
                 self.gc(26)
-                # print('r: %s, w0 ' % self.round, ubinascii.hexlify(self.w_round))
-                # print('r: %s, wi ' % self.round, ubinascii.hexlify(self.winv))
+                print('r: %s, w0 ' % self.round, ubinascii.hexlify(self.w_round))
+                print('r: %s, wi ' % self.round, ubinascii.hexlify(self.winv))
 
                 # New blinding factors to use for newly folded vectors
                 self._prove_new_blindsN()
@@ -2090,8 +2090,11 @@ class BulletProofBuilder:
             if inmem:
                 self.offstate = 10  # finish in-memory, _phase2_loop_full
 
+            elif self.off_method >= 1:
+                self.offstate = 2   # another loop, cLcR offdot
+
             else:
-                self.offstate = 2   # another loop
+                self.offstate = 20  # manual cLcR
 
             print('Moved to state %s' % self.offstate)
 

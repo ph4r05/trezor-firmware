@@ -543,27 +543,44 @@ class TestMoneroBulletproof(unittest.TestCase):
         # - clcr part, compute blinded cL, cR, LcA, LcB, RcA, RcB
         nprime = bpi.nprime
         while bpi.nprime >= bpi.nprime_thresh or (bpi.off_method == 2 and bpi.nprime >= bpi.off2_thresh):
-            print('Client, BPI nprime: %s, CLI nprime: %s' % (bpi.nprime, nprime))
+            print('Client, BPI nprime: %s, CLI nprime: %s, |Gprime|: %s' % (bpi.nprime, nprime, len(Gprime)))
             npr2 = nprime * 2
 
-            # Computing dot products in-memory, blinded
-            cL = bp._inner_product(
-                aprime.slice_view(0, nprime), bprime.slice_view(nprime, npr2), None
-            )
+            if bpi.off_method == 0:
+                # round 0 - aLow, bHigh
+                print('r%s, cLcR aLow' % bpi.round)
+                for i in range(nprime // batching):
+                    ia0, ia1, ib0, ib1 = comp_fold_idx(batching, nprime, i)
+                    print(' .. i: %s, %s:%s, %s:%s' % (i, ia0, ia1, ib0, ib1))
+                    print(bpi.prove_batch_off_step((aprime.d[ia0:ia1], bprime.d[ib0:ib1], Gprime.d[ib0:ib1], Hprime.d[ia0:ia1])))
 
-            cR = bp._inner_product(
-                aprime.slice_view(nprime, npr2), bprime.slice_view(0, nprime), None
-            )
+                # round 0 - aHigh, bLow
+                print('r%s, cLcR aHigh' % bpi.round)
+                for i in range(nprime // batching):
+                    ib0, ib1, ia0, ia1 = comp_fold_idx(batching, nprime, i)
+                    print(' .. i: %s, %s:%s, %s:%s' % (i, ia0, ia1, ib0, ib1))
+                    rrcons = bpi.prove_batch_off_step((aprime.d[ia0:ia1], bprime.d[ib0:ib1], Gprime.d[ib0:ib1], Hprime.d[ia0:ia1]))
+                    print(rrcons)
 
-            LcA = bp._vector_sum_aA(None, aprime.slice_view(0, nprime), Gprime.slice_view(nprime, npr2))
-            LcB = bp._vector_sum_aA(None, bprime.slice_view(nprime, npr2), Hprime.slice_view(0, nprime))
+            else:
+                # Computing dot products in-memory, blinded
+                cL = bp._inner_product(
+                    aprime.slice_view(0, nprime), bprime.slice_view(nprime, npr2), None
+                )
 
-            RcA = bp._vector_sum_aA(None, aprime.slice_view(nprime, npr2), Gprime.slice_view(0, nprime))
-            RcB = bp._vector_sum_aA(None, bprime.slice_view(0, nprime), Hprime.slice_view(nprime, npr2))
+                cR = bp._inner_product(
+                    aprime.slice_view(nprime, npr2), bprime.slice_view(0, nprime), None
+                )
 
-            print('clcr step, r %s' % bpi.round)
-            rrcons = bpi.prove_batch_off_step((cL, cR, LcA, LcB, RcA, RcB))
-            print(rrcons)
+                LcA = bp._vector_sum_aA(None, aprime.slice_view(0, nprime), Gprime.slice_view(nprime, npr2))
+                LcB = bp._vector_sum_aA(None, bprime.slice_view(nprime, npr2), Hprime.slice_view(0, nprime))
+
+                RcA = bp._vector_sum_aA(None, aprime.slice_view(nprime, npr2), Gprime.slice_view(0, nprime))
+                RcB = bp._vector_sum_aA(None, bprime.slice_view(0, nprime), Hprime.slice_view(nprime, npr2))
+
+                print('clcr step, r %s' % bpi.round)
+                rrcons = bpi.prove_batch_off_step((cL, cR, LcA, LcB, RcA, RcB))
+                print(rrcons)
 
             for ix, v in enumerate((Gprime, Hprime, aprime, bprime)):
                 print('Folding IX: %s, r %s' % (ix, bpi.round))
