@@ -1221,10 +1221,25 @@ class BulletProofBuilder:
         self.gc_fnc = gc.collect
         self.gc_trace = None
 
-        self.batching = 32
+        self.do_blind = True
         self.offload = False
+
+        # Number of elements per one vector to batch in one message.
+        # Message can contain multiple vectors.
+        self.batching = 32
+
+        # 0 = full offload, no blinding, just encrypted dummy storage (NOT IMPLEMENTED)
+        # 1 = offload dot product, blinding (cL, cR, LcA, LcB, RcA, RcB)
+        # 2 = offload dot product + folding.
         self.off_method = 0
+
+        # Threshold for in-memory operation per one vector.
         self.nprime_thresh = 64
+
+        # Threshold for in-memory operation with off_method=2.
+        # When reached, host sends vectors for the last folding to the host,
+        # then host operates in-memory (requires off2_thresh <= nprime_thresh)
+        self.off2_thresh = 32
 
         self.MN = 1
         self.M = 1
@@ -1717,10 +1732,13 @@ class BulletProofBuilder:
 
     def _new_blinds(self, ix):
         if self.blinds[ix] is None or len(self.blinds[ix]) != 8 or self.blinds[ix][0] is None:
-            self.blinds[ix] = [crypto.random_scalar() for _ in range(8)]
+            self.blinds[ix] = [(crypto.random_scalar() if self.do_blind else crypto.sc_init(1)) for _ in range(8)]
         else:
             for i in range(8):
-                crypto.random_scalar(self.blinds[ix][i])
+                if self.do_blind:
+                    crypto.random_scalar(self.blinds[ix][i])
+                else:
+                    crypto.sc_init_into(self.blinds[ix][i], 1)
 
     def _swap_blinds(self):
         self.blinds[0], self.blinds[1] = self.blinds[1], self.blinds[0]
@@ -1848,9 +1866,15 @@ class BulletProofBuilder:
             self.offstate += 1
             print('Moved to state ', self.offstate)
 
+        # In the round0 we do Trezor folding anyway due to G, H being only on the Trezor
+        # Optimization: aprime, bprime could be computed on the Host (not implemented yet)
         if self.offstate >= 22:
-            print('Move to state 3')
+            print('Move to state 3 (folding)')
             self.offstate = 3
+
+            if self.off_method == 2:
+                print('fold offload')
+                return self._compute_folding_consts()
 
     def _phase2_loop_offdot(self, buffers):
         """
@@ -1876,8 +1900,8 @@ class BulletProofBuilder:
         cR = _sc_mul(cR, cR, ibls[5])  # unblind a1
         cR = _sc_mul(cR, cR, ibls[6])  # unblind b0
 
-        # print('r: %s, cL ' % self.round, ubinascii.hexlify(cL))
-        # print('r: %s, cR ' % self.round, ubinascii.hexlify(cR))
+        print('r: %s, cL ' % self.round, ubinascii.hexlify(cL))
+        print('r: %s, cR ' % self.round, ubinascii.hexlify(cR))
 
         LcA = _scalarmult_key(LcA, LcA, _sc_mul(None, ibls[4], ibls[1]))  # a0 G1
         RcA = _scalarmult_key(RcA, RcA, _sc_mul(None, ibls[5], ibls[0]))  # a1 G0
@@ -1897,8 +1921,8 @@ class BulletProofBuilder:
         _scalarmult_key(_tmp_bf_0, _tmp_bf_0, _INV_EIGHT)
         self.R.read(self.round, _tmp_bf_0)
 
-        # print('r: %s, Lc ' % self.round, ubinascii.hexlify(self.L.to(self.round)))
-        # print('r: %s, Rc ' % self.round, ubinascii.hexlify(self.R.to(self.round)))
+        print('r: %s, Lc ' % self.round, ubinascii.hexlify(self.L.to(self.round)))
+        print('r: %s, Rc ' % self.round, ubinascii.hexlify(self.R.to(self.round)))
 
         # PAPER LINES 21-22
         _hash_cache_mash(self.w_round, self.hash_cache, self.L.to(self.round), self.R.to(self.round))
@@ -1914,12 +1938,53 @@ class BulletProofBuilder:
 
         # New blinding factors to use for newly folded vectors
         self._prove_new_blindsN()
-
         self.offstate, self.offpos = 3, 0
+
+        # When offloading also the folding - return blinding constants
+        if self.off_method == 2 and self.nprime <= self.off2_thresh:
+            print('Off2, fold anyway - threshold reached')
+            return
+
+        # Offload the folding - compute constants
+        if self.off_method == 2:
+            print('fold offload')
+            tconst = self._compute_folding_consts()
+
+            # State 20 - clcr, dot products by the host
+            self.offstate = 2
+            self.nprime >>= 1
+            self.round += 1
+            self._swap_blinds()
+            return tconst
+
+    def _compute_folding_consts(self):
+        """
+        Computes offloaded folding constants
+        """
+        # Constatns: 4 per vector.
+        # Example, folding of the Gprime:
+        # Gp_{LO, i} = m_0 bl0^{-1} w^{-1} G_i   +   m_0 bl1^{-1} w G_{i+h}, i \in [0,        nprime/2]
+        # Gp_{HI, i} = m_1 bl0^{-1} w^{-1} G_i   +   m_1 bl1^{-1} w G_{i+h}, i \in [nprime/2, nprime]
+        # w constants: G H a b: -1 1 1 -1
+        w0 = crypto.decodeint_into_noreduce(self.w_round)
+        wi = crypto.sc_inv_into(None, w0)
+        blinvs = [crypto.sc_inv_into(None, x) for x in self.blinds[0]]
+        tconst = [_ensure_dst_key() for _ in range(4*4)]
+        for i in range(16):
+            mi = self.blinds[1][i // 2]
+            bi = blinvs[2 * (i // 4) + (i % 2)]
+            x0, x1 = (wi, w0) if i // 4 in (0, 3) else (w0, wi)
+            xi = x0 if i % 2 == 0 else x1
+
+            crypto.sc_mul_into(_tmp_sc_1, mi, bi)
+            crypto.sc_mul_into(_tmp_sc_1, _tmp_sc_1, xi)
+            crypto.encodeint_into(tconst[i], _tmp_sc_1)
+        return tconst
 
     def _phase2_loop_fold(self, buffers):
         """
         Computes folding per partes
+        States: 3, 4, 5, 6
         """
         print('phase2_loop_fold, state: %s, off: %s, round: %s, nprime: %s' % (self.offstate, self.offpos, self.round, self.nprime))
 
@@ -1943,7 +2008,8 @@ class BulletProofBuilder:
 
         # In memory caching from some point
         utils.ensure(self.nprime_thresh <= KeyV.chunk_size(), "Threshold has to be lower than chunk size, or disable chunking")
-        inmem = self.nprime <= self.nprime_thresh
+        utils.ensure(self.off_method != 2 or self.off2_thresh <= self.nprime_thresh, "off2 threshold invalid")
+        inmem = self.nprime <= self.nprime_thresh or (self.off_method == 2 and self.nprime <= self.off2_thresh)
         tgt = min(self.batching, self.nprime)
         fld = None
 
@@ -2016,8 +2082,8 @@ class BulletProofBuilder:
 
                 if self.offstate == 7:
                     self.b = fld.to(0)
-                
-        if self.offstate >= 7:
+
+        if self.offstate >= 7 or (self.round == 0 and self.off_method == 2 and self.offstate >= 5):
             self.nprime >>= 1
             self.round += 1
 

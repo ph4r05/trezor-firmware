@@ -5,6 +5,76 @@ if not utils.BITCOIN_ONLY:
     from apps.monero.xmr.serialize_messages.tx_rsig_bulletproof import Bulletproof
     import ubinascii
 
+    _tmp_bf_0 = bytearray(32)
+    _tmp_bf_1 = bytearray(32)
+
+    _tmp_pt_1 = crypto.new_point()
+    _tmp_pt_2 = crypto.new_point()
+    _tmp_pt_3 = crypto.new_point()
+    _tmp_pt_4 = crypto.new_point()
+
+    _tmp_sc_1 = crypto.new_scalar()
+    _tmp_sc_2 = crypto.new_scalar()
+    _tmp_sc_3 = crypto.new_scalar()
+    _tmp_sc_4 = crypto.new_scalar()
+
+    def hadamard_fold(dst, c0, A0, c1, A1):
+        h = len(A0)
+        crypto.decodeint_into_noreduce(_tmp_sc_1, c0)
+        crypto.decodeint_into_noreduce(_tmp_sc_2, c1)
+
+        for i in range(h):
+            crypto.decodepoint_into(_tmp_pt_1, A0.to(i))
+            crypto.decodepoint_into(_tmp_pt_2, A1.to(i))
+            crypto.add_keys3_into(_tmp_pt_3, _tmp_sc_1, _tmp_pt_1, _tmp_sc_2, _tmp_pt_2)
+            crypto.encodepoint_into(_tmp_bf_0, _tmp_pt_3)
+            dst.read(i, _tmp_bf_0)
+
+        return dst
+
+    def scalar_fold(dst, c0, a0, c1, a1):
+        h = len(a0)
+        crypto.decodeint_into_noreduce(_tmp_sc_1, c0)
+        crypto.decodeint_into_noreduce(_tmp_sc_2, c1)
+
+        for i in range(h):
+            crypto.decodeint_into_noreduce(_tmp_sc_3, a0.to(i))
+            crypto.decodeint_into_noreduce(_tmp_sc_4, a1.to(i))
+            crypto.sc_mul_into(_tmp_sc_3, _tmp_sc_3, _tmp_sc_1)
+            crypto.sc_mul_into(_tmp_sc_4, _tmp_sc_4, _tmp_sc_2)
+            crypto.sc_add_into(_tmp_sc_3, _tmp_sc_3, _tmp_sc_4)
+            crypto.encodeint_into(_tmp_bf_0, _tmp_sc_3)
+            dst.read(i , _tmp_bf_0)
+
+        return dst
+
+    def comp_fold_idx(batching, nprime, i):
+        ia0 = 32 * (i * batching)
+        ia1 = ia0 + 32 * batching
+        ib0 = 32 * (i * batching + nprime)
+        ib1 = ib0 + 32 * batching
+        return ia0, ia1, ib0, ib1
+
+    def comp_folding(rrcons, nprime, v, ix):
+        # Compute folding all in memory
+        # Gp_{LO, i} = m_0 bl0^{-1} w G_i   +   m_0 bl1^{-1} w^{-1} G_{i+h}
+        # Gp_{HI, i} = m_1 bl0^{-1} w G_i   +   m_1 bl1^{-1} w^{-1} G_{i+h}
+        P0, P1 = v.slice_view(0, nprime//2), v.slice_view(nprime, nprime + nprime//2)
+        P2, P3 = v.slice_view(nprime//2, nprime), v.slice_view(nprime + nprime//2, nprime * 2)
+        D0, D1 = v.slice_view(0, nprime//2), v.slice_view(nprime//2, nprime)
+        a0, a1 = rrcons[4*ix+0], rrcons[4*ix+1]
+        a2, a3 = rrcons[4*ix+2], rrcons[4*ix+3]
+
+        if ix in (0, 1):
+            hadamard_fold(D0, a0, P0, a1, P1)
+            hadamard_fold(D1, a2, P2, a3, P3)
+        else:
+            scalar_fold(D0, a0, P0, a1, P1)
+            scalar_fold(D1, a2, P2, a3, P3)
+        v.resize(nprime)
+        return v
+
+
 @unittest.skipUnless(not utils.BITCOIN_ONLY, "altcoin")
 class TestMoneroBulletproof(unittest.TestCase):
 
@@ -392,6 +462,7 @@ class TestMoneroBulletproof(unittest.TestCase):
         bprime = r
         print('Batching: %s, MN: %s, chunk size: %s' % (batching, MN, MN // batching))
 
+        bpi.off_method = 2
         l0, r0 = bpi.prove_batch_off(sv, gamma)
         l += l0
         r += r0
@@ -402,33 +473,31 @@ class TestMoneroBulletproof(unittest.TestCase):
             l += l0
             r += r0
 
-        print('l,r finished')
-        print('Phase 1 finishing: ', bpi.prove_batch_off_step(None))
+        print('l, r finished')
+        rrcons = bpi.prove_batch_off_step(None)
+        print('Phase 1 finishing: ', rrcons)
         print('Phase 1 finished')
 
         # round 0 - aLow, bHigh
-        print('r0, aLow')
+        print('r0, cLcR aLow')
         for i in range(MN // batching // 2):
-            ia0 = 32 * (i * batching)
-            ia1 = ia0 + 32 * batching
-            ib0 = 32 * (i * batching + MN // 2)
-            ib1 = ib0 + 32 * batching
+            ia0, ia1, ib0, ib1 = comp_fold_idx(batching, MN // 2, i)
             print(' .. i: %s, %s:%s, %s:%s' % (i, ia0, ia1, ib0, ib1))
             print(bpi.prove_batch_off_step((l[ia0:ia1], r[ib0:ib1])))
 
         # round 0 - aHigh, bLow
-        print('r0, aHigh')
+        print('r0, cLcR aHigh')
         for i in range(MN // batching // 2):
-            ia0 = 32 * (i * batching + MN // 2)
-            ia1 = ia0 + 32 * batching
-            ib0 = 32 * (i * batching)
-            ib1 = ib0 + 32 * batching
+            ib0, ib1, ia0, ia1 = comp_fold_idx(batching, MN // 2, i)
             print(' .. i: %s, %s:%s, %s:%s' % (i, ia0, ia1, ib0, ib1))
-            print(bpi.prove_batch_off_step((l[ia0:ia1], r[ib0:ib1])))
+            rrcons = bpi.prove_batch_off_step((l[ia0:ia1], r[ib0:ib1]))
+            print(rrcons)
 
         # round 0 folding, G, H, a, b
         Gprime = bytearray()
         Hprime = bytearray()
+        app = bytearray()
+        bpp = bytearray()
         print('r0, fold G')
         for i in range(MN // batching // 2):
             cres = bpi.prove_batch_off_step(None)
@@ -439,43 +508,45 @@ class TestMoneroBulletproof(unittest.TestCase):
             cres = bpi.prove_batch_off_step(None)
             if cres: Hprime += cres
 
-        app = bytearray()
-        bpp = bytearray()
-        print('r0, fold a')
-        for i in range(MN // batching // 2):
-            ia0 = 32 * (i * batching)
-            ia1 = ia0 + 32 * batching
-            ib0 = 32 * (i * batching + MN // 2)
-            ib1 = ib0 + 32 * batching
-            cres = bpi.prove_batch_off_step((aprime[ia0:ia1], aprime[ib0:ib1]))
-            if cres: app += cres
-
-        print('r0, fold b')
-        for i in range(MN // batching // 2):
-            ia0 = 32 * (i * batching)
-            ia1 = ia0 + 32 * batching
-            ib0 = 32 * (i * batching + MN // 2)
-            ib1 = ib0 + 32 * batching
-            cres = bpi.prove_batch_off_step((bprime[ia0:ia1], bprime[ib0:ib1]))
-            if cres: bpp += cres
-
-        aprime = bp.KeyV(MN//2, app)
-        bprime = bp.KeyV(MN//2, bpp)
         Gprime = bp.KeyV(MN//2, Gprime)
         Hprime = bp.KeyV(MN//2, Hprime)
-        print('Alen: %s, blen: %s, gplen: %s, hplen: %s' % (len(aprime), len(bprime), len(Gprime), len(Hprime)))
-        # print('PC r: %s, ap ' % 0, ubinascii.hexlify(aprime.d[-64:]))
-        # print('PC r: %s, bp ' % 0, ubinascii.hexlify(bprime.d[-64:]))
-        # print('PC r: %s, Gp ' % 0, ubinascii.hexlify(Gprime.d[-64:]))
-        # print('PC r: %s, Hp ' % 0, ubinascii.hexlify(Hprime.d[-64:]))
+
+        if bpi.off_method == 2:
+            print('in-mem fold for a, b')
+            aprime = bp.KeyV(MN, l)
+            bprime = bp.KeyV(MN, r)
+            comp_folding(rrcons, MN//2, aprime, 2)
+            comp_folding(rrcons, MN//2, bprime, 3)
+
+        else:
+            print('r0, fold a')
+            for i in range(MN // batching // 2):
+                ia0, ia1, ib0, ib1 = comp_fold_idx(batching, MN // 2, i)
+                cres = bpi.prove_batch_off_step((aprime[ia0:ia1], aprime[ib0:ib1]))
+                if cres: app += cres
+
+            print('r0, fold b')
+            for i in range(MN // batching // 2):
+                ia0, ia1, ib0, ib1 = comp_fold_idx(batching, MN // 2, i)
+                cres = bpi.prove_batch_off_step((bprime[ia0:ia1], bprime[ib0:ib1]))
+                if cres: bpp += cres
+
+            aprime = bp.KeyV(MN//2, app)
+            bprime = bp.KeyV(MN//2, bpp)
+
+        print('0PC r: %s, ap ' % bpi.round, len(aprime), ubinascii.hexlify(aprime.d[-64:]))
+        print('0PC r: %s, bp ' % bpi.round, len(bprime), ubinascii.hexlify(bprime.d[-64:]))
+        print('0PC r: %s, Gp ' % bpi.round, len(Gprime), ubinascii.hexlify(Gprime.d[-64:]))
+        print('0PC r: %s, Hp ' % bpi.round, len(Hprime), ubinascii.hexlify(Hprime.d[-64:]))
 
         # Loops:
         # - clcr part, compute blinded cL, cR, LcA, LcB, RcA, RcB
-        while bpi.nprime >= bpi.nprime_thresh:
-            print('Client nprime: %s' % bpi.nprime)
-            nprime = bpi.nprime
+        nprime = bpi.nprime
+        while bpi.nprime >= bpi.nprime_thresh or (bpi.off_method == 2 and bpi.nprime >= bpi.off2_thresh):
+            print('Client, BPI nprime: %s, CLI nprime: %s' % (bpi.nprime, nprime))
             npr2 = nprime * 2
 
+            # Computing dot products in-memory, blinded
             cL = bp._inner_product(
                 aprime.slice_view(0, nprime), bprime.slice_view(nprime, npr2), None
             )
@@ -491,18 +562,28 @@ class TestMoneroBulletproof(unittest.TestCase):
             RcB = bp._vector_sum_aA(None, bprime.slice_view(0, nprime), Hprime.slice_view(nprime, npr2))
 
             print('clcr step, r %s' % bpi.round)
-            print(bpi.prove_batch_off_step((cL, cR, LcA, LcB, RcA, RcB)))
+            rrcons = bpi.prove_batch_off_step((cL, cR, LcA, LcB, RcA, RcB))
+            print(rrcons)
 
             for ix, v in enumerate((Gprime, Hprime, aprime, bprime)):
                 print('Folding IX: %s, r %s' % (ix, bpi.round))
+
+                # Offloaded folding up to batching limit / limit defined by Trezor
+                # Can be e.g. 8 elements. Remaining 8 computed in memory in the Trezor
+                if bpi.off_method == 2 and rrcons:
+                    print('.. PC: in-memory fold, len: ', len(v), nprime)
+                    comp_folding(rrcons, nprime, v, ix)
+
+                    if ix == 3:
+                        nprime >>= 1
+                    continue
+
+                # Ordinary folding for methods [0, 1]
                 bf = v.d
                 nf = bytearray()
                 cbatching = min(batching, nprime)
                 for i in range(max(1, nprime // cbatching)):
-                    ia0 = 32 * (i * cbatching)
-                    ia1 = ia0 + 32 * cbatching
-                    ib0 = 32 * (i * cbatching + nprime)
-                    ib1 = ib0 + 32 * cbatching
+                    ia0, ia1, ib0, ib1 = comp_fold_idx(batching, nprime, i)
                     print(' .. i: %s, %s:%s, %s:%s' % (i, ia0, ia1, ib0, ib1))
 
                     lo = bf[ia0:ia1]
@@ -521,16 +602,15 @@ class TestMoneroBulletproof(unittest.TestCase):
                     aprime = nf
                 elif ix == 3:
                     bprime = nf
-            # print('PC r: %s, ap ' % bpi.round, ubinascii.hexlify(aprime.d[-64:]))
-            # print('PC r: %s, bp ' % bpi.round, ubinascii.hexlify(bprime.d[-64:]))
-            # print('PC r: %s, Gp ' % bpi.round, ubinascii.hexlify(Gprime.d[-64:]))
-            # print('PC r: %s, Hp ' % bpi.round, ubinascii.hexlify(Hprime.d[-64:]))
+                    nprime = bpi.nprime
+
+            print('wPC r: %s, ap ' % bpi.round, len(aprime), ubinascii.hexlify(aprime.d[-64:]))
+            print('wPC r: %s, bp ' % bpi.round, len(bprime), ubinascii.hexlify(bprime.d[-64:]))
+            print('wPC r: %s, Gp ' % bpi.round, len(Gprime), ubinascii.hexlify(Gprime.d[-64:]))
+            print('wPC r: %s, Hp ' % bpi.round, len(Hprime), ubinascii.hexlify(Hprime.d[-64:]))
 
         rs, proof = bpi.prove_batch_off_step(None)
         print('PROOF ', proof)
-        # print(ubinascii.hexlify(proof.V.d))
-        # print(ubinascii.hexlify(proof.L.d))
-        # print(ubinascii.hexlify(proof.R.d))
         bpi.verify_batch([proof])
 
     def test_prove_batch16_off(self):
