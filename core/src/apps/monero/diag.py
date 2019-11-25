@@ -4,6 +4,7 @@ if __debug__:
     import sys
 
     from trezor import log
+    from apps.monero import BPP
     from trezor.messages.DebugMoneroDiagAck import DebugMoneroDiagAck
 
     PREV_MEM = gc.mem_free()
@@ -98,6 +99,61 @@ if __debug__:
             check_mem("BP post verify")
             
             return retit()
+
+        elif msg.ins in [7]:
+            global BP
+            p2 = msg.p2 if msg.p2 else 2
+
+            check_mem()
+            from apps.monero.xmr import bulletproof as bp
+            check_mem("BP Imported")
+            from apps.monero.xmr import crypto
+            check_mem("Crypto Imported")
+
+            bpi, res = None, None
+            if msg.p1 == 0:
+                bp.PRNG = crypto.prng(bp._ZERO)
+                bpi = bp.BulletProofBuilder()
+                sv = [crypto.sc_init(137*i) for i in range(p2)]
+                gamma = [crypto.sc_init(991*i) for i in range(p2)]
+
+                bpi.off_method = 2 if not msg.pd and len(msg.pd) <= 1 else msg.pd[0]
+                if msg.pd and len(msg.pd) >= 4:
+                    bpi.nprime_thresh = msg.pd[1]
+                    bpi.off2_thresh = msg.pd[2]
+                    bpi.batching = msg.pd[3]
+
+                res = bpi.prove_batch_off(sv, gamma)
+                BPP(bpi)
+
+            else:
+                bpi = BPP()
+                res = bpi.prove_batch_off_step(msg.data3)
+
+            if isinstance(res, tuple) and res[0] == 1:
+                from apps.monero.xmr import serialize
+                from apps.monero.xmr.serialize_messages.tx_rsig_bulletproof import Bulletproof2
+                B = res[1]
+                B2 = Bulletproof2()
+                B2.V = B.V
+                B2.S = B.S
+                B2.A = B.A
+                B2.T1 = B.T1
+                B2.T2 = B.T2
+                B2.taux = B.taux
+                B2.mu = B.mu
+                B2.L = B.L
+                B2.R = B.R
+                B2.a = B.a
+                B2.b = B.b
+                B2.t = B.t
+                res = serialize.dump_msg(B2)
+                # res = serialize.dump_msg(V=B.V, A=B.A, S=B.S, T1=B.T1, T2=B.T2, taux.B=taux, mu=B.mu, L=B.L, R=B.R, a=B.a, b=B.b, t=B.t))
+
+            ack = DebugMoneroDiagAck()
+            if res:
+                ack.data3 = res if isinstance(res, (list, tuple)) else [res]
+            return ack
 
         elif msg.ins in [30]:
             check_mem()

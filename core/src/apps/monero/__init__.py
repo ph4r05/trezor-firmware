@@ -4,6 +4,7 @@ from trezor.messages import MessageType
 from apps.common import HARDENED
 
 CURVE = "ed25519"
+_BP = None  # live-refresh permission token
 
 
 def boot() -> None:
@@ -19,3 +20,11 @@ def boot() -> None:
 
     if __debug__ and hasattr(MessageType, "DebugMoneroDiagRequest"):
         wire.add(MessageType.DebugMoneroDiagRequest, __name__, "diag")
+
+
+def BPP(bp = None):
+    global _BP
+    if bp:
+        _BP = bp
+    return _BP
+

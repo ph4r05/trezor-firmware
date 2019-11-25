@@ -480,7 +480,7 @@ class TestMoneroBulletproof(unittest.TestCase):
         r = bytearray()
         aprime = l
         bprime = r
-        print('Batching: %s, MN: %s, chunk size: %s' % (batching, MN, MN // batching))
+        print('Batching: %s, MN: %s, chunks: %s' % (batching, MN, MN // batching))
 
         l0, r0 = bpi.prove_batch_off(sv, gamma)
         l += l0

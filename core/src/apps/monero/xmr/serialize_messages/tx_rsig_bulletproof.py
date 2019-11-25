@@ -19,3 +19,21 @@ class Bulletproof(MessageType):
             ("b", ECKey),
             ("t", ECKey),
         )
+
+class Bulletproof2(MessageType):
+    @classmethod
+    def f_specs(cls):
+        return (
+            ("V", KeyV),
+            ("A", ECKey),
+            ("S", ECKey),
+            ("T1", ECKey),
+            ("T2", ECKey),
+            ("taux", ECKey),
+            ("mu", ECKey),
+            ("L", KeyV),
+            ("R", KeyV),
+            ("a", ECKey),
+            ("b", ECKey),
+            ("t", ECKey),
+        )
