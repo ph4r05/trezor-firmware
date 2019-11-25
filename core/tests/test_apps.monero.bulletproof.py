@@ -535,7 +535,6 @@ class TestMoneroBulletproof(unittest.TestCase):
 
         else:
             # round 0 - aLow, bHigh; aHigh, bLow in memory
-            # host has to postprocess a bit more, still faster.
             print('r0, cLcR off, nprime: %s' % str(MN//2))
             yinvpow = vect_clone(None, bp.KeyVPowers(MN, bp._invert(None, y), raw=False))
             Gprec = vect_clone(None, bpi._gprec_aux(MN))

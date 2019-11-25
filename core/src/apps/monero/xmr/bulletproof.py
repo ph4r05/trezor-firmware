@@ -2109,6 +2109,9 @@ class BulletProofBuilder:
             self.nprime >>= 1
             self.round += 1
 
+            if self.round == 1:
+                del (self.Gprec2, self.Hprec2, self.yinvpowL, self.yinvpowR, self.HprimeL, self.HprimeR, self.tmp_pt)
+
             if inmem:
                 self.offstate = 10  # finish in-memory, _phase2_loop_full
 
