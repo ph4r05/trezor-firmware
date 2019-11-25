@@ -310,7 +310,7 @@ class KeyVBase:
 
     def to(self, idx, buff=None, offset=0):
         buff = _ensure_dst_key(buff)
-        return memcpy(buff, offset, self.to(self.idxize(idx)), 0, 32)
+        return memcpy(buff, offset, self[self.idxize(idx)], 0, 32)
 
     def read(self, idx, buff, offset=0):
         raise ValueError
