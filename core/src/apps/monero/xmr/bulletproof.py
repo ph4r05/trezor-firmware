@@ -1728,6 +1728,9 @@ class BulletProofBuilder:
         self.L = _ensure_dst_keyvect(None, self.logMN)
         self.R = _ensure_dst_keyvect(None, self.logMN)
 
+        if self.l is None:
+            self.l = []
+            self.r = []
         return self.A, self.S, self.T1, self.T2, self.taux, self.mu, self.t, self.l, self.r, self.y, self.x_ip, self.hash_cache
 
     def _new_blinds(self, ix):
