@@ -4,6 +4,7 @@ if __debug__:
     import sys
 
     from trezor import log
+    from trezor.messages.DebugMoneroDiagAck import DebugMoneroDiagAck
 
     PREV_MEM = gc.mem_free()
     CUR_MES = 0
@@ -36,9 +37,7 @@ if __debug__:
         PREV_MEM = free
 
     def retit(**kwargs):
-        from trezor.messages.Failure import Failure
-
-        return Failure(**kwargs)
+        return DebugMoneroDiagAck(**kwargs)
 
     async def diag(ctx, msg, **kwargs):
         log.debug(__name__, "----diagnostics")
