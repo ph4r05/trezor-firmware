@@ -74,6 +74,24 @@ if not utils.BITCOIN_ONLY:
         v.resize(nprime)
         return v
 
+    def comp_offdots(Gprime, Hprime, aprime, bprime, nprime):
+        # Computing dot products in-memory, blinded
+        npr2 = nprime * 2
+        cL = bp._inner_product(
+            aprime.slice_view(0, nprime), bprime.slice_view(nprime, npr2), None
+        )
+
+        cR = bp._inner_product(
+            aprime.slice_view(nprime, npr2), bprime.slice_view(0, nprime), None
+        )
+
+        LcA = bp._vector_sum_aA(None, aprime.slice_view(0, nprime), Gprime.slice_view(nprime, npr2))
+        LcB = bp._vector_sum_aA(None, bprime.slice_view(nprime, npr2), Hprime.slice_view(0, nprime))
+
+        RcA = bp._vector_sum_aA(None, aprime.slice_view(nprime, npr2), Gprime.slice_view(0, nprime))
+        RcB = bp._vector_sum_aA(None, bprime.slice_view(0, nprime), Hprime.slice_view(nprime, npr2))
+        return cL, cR, LcA, LcB, RcA, RcB
+
     def dechunk_res(buffers, exp_res=1):
         if not buffers or not isinstance(buffers, list):
             return buffers
@@ -83,6 +101,12 @@ if not utils.BITCOIN_ONLY:
         for i in range(ln):
             cres[i//(ln//exp_res)] += buffers[i]
         return cres if exp_res > 1 else cres[0]
+
+    def vect_clone(dst, src):
+        dst = bp._ensure_dst_keyvect(dst, len(src))
+        for i in range(len(src)):
+            dst.read(i, src.to(i))
+        return dst
 
 
 @unittest.skipUnless(not utils.BITCOIN_ONLY, "altcoin")
@@ -457,20 +481,13 @@ class TestMoneroBulletproof(unittest.TestCase):
         # print(ubinascii.hexlify(proof.R.d))
         bpi.verify_batch([proof])
 
-    def prove_batch_off(self, ln):
+    def prove_batch_off(self, ln, off_method=2, nprime_thresh=64, off2_thresh=32, batching=32):
         bp.PRNG = crypto.prng(bp._ZERO)
         bpi = bp.BulletProofBuilder()
         sv = [crypto.sc_init(137*i) for i in range(ln)]
         gamma = [crypto.sc_init(991*i) for i in range(ln)]
 
-        M = ln
         MN = 64 * ln
-
-        off_method = 2
-        nprime_thresh = 64
-        batching = 32
-        off2_thresh = 32
-
         bpi.batching = batching
         bpi.nprime_thresh = nprime_thresh
         bpi.off_method = off_method
@@ -497,19 +514,36 @@ class TestMoneroBulletproof(unittest.TestCase):
         print('Phase 1 finishing: ', rrcons)
         print('Phase 1 finished')
 
-        # round 0 - aLow, bHigh
-        print('r0, cLcR aLow')
-        for i in range(MN // batching // 2):
-            ia0, ia1, ib0, ib1 = comp_fold_idx(batching, MN // 2, i)
-            print(' .. i: %s, %s:%s, %s:%s' % (i, ia0, ia1, ib0, ib1))
-            print(bpi.prove_batch_off_step((l[ia0:ia1], r[ib0:ib1])))
+        y = rrcons[0] if rrcons and len(rrcons) > 0 else None
 
-        # round 0 - aHigh, bLow
-        print('r0, cLcR aHigh')
-        for i in range(MN // batching // 2):
-            ib0, ib1, ia0, ia1 = comp_fold_idx(batching, MN // 2, i)
-            print(' .. i: %s, %s:%s, %s:%s' % (i, ia0, ia1, ib0, ib1))
-            rrcons = bpi.prove_batch_off_step((l[ia0:ia1], r[ib0:ib1]))
+        # First while-loop iteration, dot-product computation, lC, lR, Lc, Lr, w, winv
+        if off_method == 0:
+            # round 0 - aLow, bHigh
+            print('r0, cLcR aLow')
+            for i in range(MN // batching // 2):
+                ia0, ia1, ib0, ib1 = comp_fold_idx(batching, MN // 2, i)
+                print(' .. i: %s, %s:%s, %s:%s' % (i, ia0, ia1, ib0, ib1))
+                print(bpi.prove_batch_off_step((l[ia0:ia1], r[ib0:ib1])))
+
+            # round 0 - aHigh, bLow
+            print('r0, cLcR aHigh')
+            for i in range(MN // batching // 2):
+                ib0, ib1, ia0, ia1 = comp_fold_idx(batching, MN // 2, i)
+                print(' .. i: %s, %s:%s, %s:%s' % (i, ia0, ia1, ib0, ib1))
+                rrcons = bpi.prove_batch_off_step((l[ia0:ia1], r[ib0:ib1]))
+                print(rrcons)
+
+        else:
+            # round 0 - aLow, bHigh; aHigh, bLow in memory
+            # host has to postprocess a bit more, still faster.
+            print('r0, cLcR off, nprime: %s' % str(MN//2))
+            yinvpow = vect_clone(None, bp.KeyVPowers(MN, bp._invert(None, y), raw=False))
+            Gprec = vect_clone(None, bpi._gprec_aux(MN))
+            Hprec = vect_clone(None, bpi._hprec_aux(MN))
+            Hprime = vect_clone(None, bp.KeyVEval(MN, lambda i, d: bp._scalarmult_key(d, Hprec[i], yinvpow[i])))
+
+            cL, cR, LcA, LcB, RcA, RcB = comp_offdots(Gprec, Hprime, bp.KeyV(MN, l), bp.KeyV(MN, r), MN//2)
+            rrcons = bpi.prove_batch_off_step((cL, cR, LcA, LcB, RcA, RcB))
             print(rrcons)
 
         # round 0 folding, G, H, a, b
@@ -585,20 +619,7 @@ class TestMoneroBulletproof(unittest.TestCase):
 
             else:
                 # Computing dot products in-memory, blinded
-                cL = bp._inner_product(
-                    aprime.slice_view(0, nprime), bprime.slice_view(nprime, npr2), None
-                )
-
-                cR = bp._inner_product(
-                    aprime.slice_view(nprime, npr2), bprime.slice_view(0, nprime), None
-                )
-
-                LcA = bp._vector_sum_aA(None, aprime.slice_view(0, nprime), Gprime.slice_view(nprime, npr2))
-                LcB = bp._vector_sum_aA(None, bprime.slice_view(nprime, npr2), Hprime.slice_view(0, nprime))
-
-                RcA = bp._vector_sum_aA(None, aprime.slice_view(nprime, npr2), Gprime.slice_view(0, nprime))
-                RcB = bp._vector_sum_aA(None, bprime.slice_view(0, nprime), Hprime.slice_view(nprime, npr2))
-
+                cL, cR, LcA, LcB, RcA, RcB = comp_offdots(Gprime, Hprime, aprime, bprime, nprime)
                 print('clcr step, r %s' % round)
                 rrcons = bpi.prove_batch_off_step((cL, cR, LcA, LcB, RcA, RcB))
                 print(rrcons)
@@ -652,8 +673,15 @@ class TestMoneroBulletproof(unittest.TestCase):
         print('PROOF ', proof.V.d)
         bpi.verify_batch([proof])
 
-    def test_prove_batch16_off(self):
+    def test_prove_batch16_off0(self):
+        self.prove_batch_off(16, 0)
+
+    def test_prove_batch16_off1(self):
+        self.prove_batch_off(16, 1)
+
+    def test_prove_batch16_off2(self):
         self.prove_batch_off(16)
+
 
 if __name__ == "__main__":
     unittest.main()

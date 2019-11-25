@@ -1722,7 +1722,8 @@ class BulletProofBuilder:
             return 0, None
 
         # prepare for looping
-        self.offstate, self.offpos = 20, 0
+        self.offstate = 20 if self.off_method == 0 else 2
+        self.offpos = 0
         self.round = 0
         self.nprime = self.MN >> 1
         print('MN: %s, nprime: %s' % (self.MN, self.nprime))
@@ -1888,6 +1889,13 @@ class BulletProofBuilder:
         Offstate = 2
         """
         print('_phase2_loop_offdot, state: %s, off: %s, round: %s, nprime: %s' % (self.offstate, self.offpos, self.round, self.nprime))
+        if not self.w_round:
+            self.winv = _ensure_dst_key()
+            self.w_round = _ensure_dst_key()
+
+        if self.Gprime is None:
+            self._phase2_loop_body_r0init()
+
         tmp = _ensure_dst_key()
         self._tmp_k_1 = _ensure_dst_key()
 
@@ -1908,23 +1916,27 @@ class BulletProofBuilder:
         print('r: %s, cL ' % self.round, ubinascii.hexlify(cL))
         print('r: %s, cR ' % self.round, ubinascii.hexlify(cR))
 
+        # products from round 0 are not blinded as Gprime and Hprime are protocol constants
+        if self.round == 0:
+            ibls[0], ibls[1], ibls[2], ibls[3] = _ONE, _ONE, _ONE, _ONE
+
         LcA = _scalarmult_key(LcA, LcA, _sc_mul(None, ibls[4], ibls[1]))  # a0 G1
         RcA = _scalarmult_key(RcA, RcA, _sc_mul(None, ibls[5], ibls[0]))  # a1 G0
 
         LcB = _scalarmult_key(LcB, LcB, _sc_mul(None, ibls[7], ibls[2]))  # b1 H0
         RcB = _scalarmult_key(RcB, RcB, _sc_mul(None, ibls[6], ibls[3]))  # b0 H1
 
-        _add_keys(_tmp_bf_0, LcA, LcB)
+        _add_keys(LcA, LcA, LcB)
         _sc_mul(tmp, cL, self.x_ip)
-        _add_keys(_tmp_bf_0, _tmp_bf_0, _scalarmultH(self._tmp_k_1, tmp))
-        _scalarmult_key(_tmp_bf_0, _tmp_bf_0, _INV_EIGHT)
-        self.L.read(self.round, _tmp_bf_0)
+        _add_keys(LcA, LcA, _scalarmultH(self._tmp_k_1, tmp))
+        _scalarmult_key(LcA, LcA, _INV_EIGHT)
+        self.L.read(self.round, LcA)
 
-        _add_keys(_tmp_bf_0, RcA, RcB)
+        _add_keys(RcA, RcA, RcB)
         _sc_mul(tmp, cR, self.x_ip)
-        _add_keys(_tmp_bf_0, _tmp_bf_0, _scalarmultH(self._tmp_k_1, tmp))
-        _scalarmult_key(_tmp_bf_0, _tmp_bf_0, _INV_EIGHT)
-        self.R.read(self.round, _tmp_bf_0)
+        _add_keys(RcA, RcA, _scalarmultH(self._tmp_k_1, tmp))
+        _scalarmult_key(RcA, RcA, _INV_EIGHT)
+        self.R.read(self.round, RcA)
 
         print('r: %s, Lc ' % self.round, ubinascii.hexlify(self.L.to(self.round)))
         print('r: %s, Rc ' % self.round, ubinascii.hexlify(self.R.to(self.round)))
@@ -1938,12 +1950,18 @@ class BulletProofBuilder:
         _invert(self.winv, self.w_round)
         self.gc(26)
 
-        # print('r: %s, w0 ' % self.round, ubinascii.hexlify(self.w_round))
-        # print('r: %s, w1 ' % self.round, ubinascii.hexlify(self.winv))
+        print('r: %s, w0 ' % self.round, ubinascii.hexlify(self.w_round))
+        print('r: %s, w1 ' % self.round, ubinascii.hexlify(self.winv))
 
         # New blinding factors to use for newly folded vectors
         self._prove_new_blindsN()
         self.offstate, self.offpos = 3, 0
+
+        # If the first round of the ofdot, we cannot do in
+        if self.off_method >= 1 and self.round == 0:
+            print('Fold now')
+            tconst = self._compute_folding_consts() if self.off_method >= 2 else None
+            return tconst
 
         # When offloading also the folding - return blinding constants
         if self.off_method == 2 and self.nprime <= self.off2_thresh:
