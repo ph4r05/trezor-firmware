@@ -1518,13 +1518,13 @@ class BulletProofBuilder:
         Hprec = self._hprec_aux(MN)
 
         # PHASE 1
-        A, S, T1, T2, taux, mu, t, l, r, y, x_ip, hash_cache = self._prove_phase1(
+        self._prove_phase1(
             N, M, logMN, V, gamma, aL, aR, hash_cache, Gprec, Hprec
         )
 
         # PHASE 2
         L, R, a, b = self._prove_loop(
-            MN, logMN, l, r, y, x_ip, hash_cache, Gprec, Hprec
+            MN, logMN, self.l, self.r, self.y, self.x_ip, self.hash_cache, Gprec, Hprec
         )
 
         from apps.monero.xmr.serialize_messages.tx_rsig_bulletproof import Bulletproof
@@ -1532,7 +1532,8 @@ class BulletProofBuilder:
         return (
             1,
             Bulletproof(
-                V=V, A=A, S=S, T1=T1, T2=T2, taux=taux, mu=mu, L=L, R=R, a=a, b=b, t=t
+                V=self.V, A=self.A, S=self.S, T1=self.T1, T2=self.T2, taux=self.taux, mu=self.mu,
+                L=L, R=R, a=a, b=b, t=self.t
             ),
         )
 
@@ -1731,7 +1732,8 @@ class BulletProofBuilder:
         if self.l is None:
             self.l = []
             self.r = []
-        return self.A, self.S, self.T1, self.T2, self.taux, self.mu, self.t, self.l, self.r, self.y, self.x_ip, self.hash_cache
+        # return self.A, self.S, self.T1, self.T2, self.taux, self.mu, self.t, self.l, self.r, self.y, self.x_ip, self.hash_cache
+        return self.y,
 
     def _new_blinds(self, ix):
         if self.blinds[ix] is None or len(self.blinds[ix]) != 8 or self.blinds[ix][0] is None:
