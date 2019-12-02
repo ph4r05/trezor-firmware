@@ -291,7 +291,7 @@ class KeyVBase:
         if idx < 0:
             idx = self.size + idx
         if idx >= self.size:
-            raise IndexError("Index out of bounds")
+            raise IndexError("Index out of bounds: %s vs %s" % (idx, self.size))
         return idx
 
     def __getitem__(self, item):
@@ -2030,37 +2030,37 @@ class BulletProofBuilder:
         Computes folding per partes
         States: 3, 4, 5, 6
         """
-        print('phase2_loop_fold, state: %s, off: %s, round: %s, nprime: %s' % (self.offstate, self.offpos, self.round, self.nprime))
+        print('phase2_loop_fold, state: %s, off: %s, round: %s, nprime: %s, btch: %s' % (self.offstate, self.offpos, self.round, self.nprime, self.batching))
 
         # Input buffer processing.
         # The first round has in-memory G, H buffers
         lo, hi = None, None
+        tgt = min(self.batching, self.nprime)
         if self.round == 0 and self.offstate in (3, 4):
             if self.offpos == 0 and self.offstate == 4:
                 self.yinvpowR.reset()
                 self.yinvpowR.rewind(self.nprime)
 
             if self.offstate == 3:
-                lo = KeyVSliced(self.Gprime, self.offpos, min(self.offpos + self.batching, self.nprime))
-                hi = KeyVSliced(self.Gprime, self.nprime + self.offpos, self.nprime + min(self.offpos + self.batching, 2 * self.nprime))
+                lo = KeyVSliced(self.Gprime, self.offpos, min(self.offpos + tgt, self.nprime))
+                hi = KeyVSliced(self.Gprime, self.nprime + self.offpos, self.nprime + min(self.offpos + tgt, 2 * self.nprime))
             else:
-                lo = KeyVSliced(self.HprimeL, self.offpos, min(self.offpos + self.batching, self.nprime))
-                hi = KeyVSliced(self.HprimeR, self.nprime + self.offpos, self.nprime + min(self.offpos + self.batching, 2 * self.nprime))
+                lo = KeyVSliced(self.HprimeL, self.offpos, min(self.offpos + tgt, self.nprime))
+                hi = KeyVSliced(self.HprimeR, self.nprime + self.offpos, self.nprime + min(self.offpos + tgt, 2 * self.nprime))
 
         else:
             lo, hi = KeyV(len(buffers[0])//32, buffers[0]), KeyV(len(buffers[1])//32, buffers[1])
 
         # In memory caching from some point
         utils.ensure(self.off_method != 2 or self.off2_thresh <= self.nprime_thresh, "off2 threshold invalid")
-        inmem = self.nprime <= self.nprime_thresh or (self.off_method == 2 and self.nprime <= self.off2_thresh)
-        tgt = min(self.batching, self.nprime)
+        inmem = self.round > 0 and (self.nprime <= self.nprime_thresh or (self.off_method == 2 and self.nprime <= self.off2_thresh))
         fld = None
 
         if inmem:
             if self.offpos == 0:  # allocate in-memory buffers now
                 fldS = KeyV(self.nprime)
                 self.Xprime[self.offstate - 3] = fldS
-            fld = KeyVSliced(self.Xprime[self.offstate - 3], self.offpos, min(self.offpos + self.batching, self.nprime))
+            fld = KeyVSliced(self.Xprime[self.offstate - 3], self.offpos, min(self.offpos + tgt, self.nprime))
         else:
             fld = KeyV(tgt)
 

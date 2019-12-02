@@ -595,7 +595,7 @@ class TestMoneroBulletproof(unittest.TestCase):
         # - clcr part, compute blinded cL, cR, LcA, LcB, RcA, RcB
         nprime = MN // 4
         round = 0
-        while nprime >= nprime_thresh or (off_method == 2 and nprime >= off2_thresh):
+        while round == 0 or nprime >= nprime_thresh or (off_method == 2 and nprime >= off2_thresh):
             npr2 = nprime * 2
             round += 1
 
