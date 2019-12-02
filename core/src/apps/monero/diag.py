@@ -109,11 +109,15 @@ if __debug__:
             check_mem("BP Imported")
             from apps.monero.xmr import crypto
             check_mem("Crypto Imported")
+            check_mem("+++BP START: %s; %s" % (msg.p1, p2))
+            log_trace("BP START")
 
             bpi, res = None, None
             if msg.p1 == 0:
                 bp.PRNG = crypto.prng(bp._ZERO)
                 bpi = bp.BulletProofBuilder()
+                bpi.gc_fnc = gc.collect
+                bpi.gc_trace = log_trace
                 sv = [crypto.sc_init(137*i) for i in range(p2)]
                 gamma = [crypto.sc_init(991*i) for i in range(p2)]
 
@@ -128,8 +132,12 @@ if __debug__:
 
             else:
                 bpi = BPP()
+                bpi.gc_fnc = gc.collect
+                bpi.gc_trace = log_trace
                 res = bpi.prove_batch_off_step(msg.data3)
 
+            log_trace("BP STEP")
+            check_mem("+++BP STEP")
             if isinstance(res, tuple) and res[0] == 1:
                 from apps.monero.xmr import serialize
                 from apps.monero.xmr.serialize_messages.tx_rsig_bulletproof import Bulletproof2
