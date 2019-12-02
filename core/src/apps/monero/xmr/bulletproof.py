@@ -27,7 +27,7 @@ _XMR_HP = crypto.xmr_H()
 
 # ip12 = inner_product(oneN, twoN);
 _BP_IP12 = b"\xff\xff\xff\xff\xff\xff\xff\xff\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00"
-
+_PRINT_INT = False
 
 PRNG = crypto.prng(_ZERO)
 
@@ -52,6 +52,12 @@ _tmp_sc_1 = crypto.new_scalar()
 _tmp_sc_2 = crypto.new_scalar()
 _tmp_sc_3 = crypto.new_scalar()
 _tmp_sc_4 = crypto.new_scalar()
+
+
+def eprint(*args, **kwargs):
+    if not _PRINT_INT:
+        return
+    print(*args, **kwargs)
 
 
 def _ensure_dst_key(dst=None):
@@ -1666,8 +1672,8 @@ class BulletProofBuilder:
         Computes l, r vectors per chunks
         """
         print('Phase1_lr, state: %s, off: %s, MN: %s' % (self.offstate, self.offpos, self.MN))
-        l = KeyV(self.batching, bytearray(32 * self.batching))
-        r = KeyV(self.batching, bytearray(32 * self.batching))
+        l = KeyV(self.batching)
+        r = KeyV(self.batching)
 
         for i in range(self.offpos, self.offpos + self.batching):
             bloff = int(i >= (self.MN >> 1))
@@ -1807,6 +1813,7 @@ class BulletProofBuilder:
             _scalarmult_key(tmp, H.to(i), b.to(i))  # XcA scalarmult
             _add_keys(XcB, XcB, tmp)
 
+        self.gc(10)
         self.offpos += min(len(a), self.batching)
         if self.offpos >= self.nprime:# * 2:
             # Unblinding vectors with half-blinded masks
@@ -1830,26 +1837,29 @@ class BulletProofBuilder:
             _sc_mul(tmp, a_raw=cbl[3], b_raw=cbl[1] if self.round > 0 else crypto.decodeint(_ONE))
             _invert(tmp, tmp)
             _scalarmult_key(XcB, XcB, tmp)
+            self.gc(11)
 
             if self.offstate == 20:  # Finish Lc
                 # print('x_ip: ', ubinascii.hexlify(self.x_ip))
-                print('r: %s, cL ' % self.round, ubinascii.hexlify(self.cL))
+                eprint('r: %s, cL ' % self.round, ubinascii.hexlify(self.cL))
                 _add_keys(_tmp_bf_0, self.LcA, self.LcB)
                 _sc_mul(tmp, self.cL, self.x_ip)
                 _add_keys(_tmp_bf_0, _tmp_bf_0, _scalarmultH(self._tmp_k_1, tmp))
                 _scalarmult_key(_tmp_bf_0, _tmp_bf_0, _INV_EIGHT)
                 self.L.read(self.round, _tmp_bf_0)
-                print('r: %s, Lc ' % self.round, ubinascii.hexlify(self.L.to(self.round)))
+                eprint('r: %s, Lc ' % self.round, ubinascii.hexlify(self.L.to(self.round)))
+                self.gc(12)
 
             elif self.offstate == 21:  # finish Rc, w
                 # print('x_ip: ', ubinascii.hexlify(self.x_ip))
-                print('r: %s, cR ' % self.round, ubinascii.hexlify(self.cR))
+                eprint('r: %s, cR ' % self.round, ubinascii.hexlify(self.cR))
                 _add_keys(_tmp_bf_0, self.RcA, self.RcB)
                 _sc_mul(tmp, self.cR, self.x_ip)
                 _add_keys(_tmp_bf_0, _tmp_bf_0, _scalarmultH(self._tmp_k_1, tmp))
                 _scalarmult_key(_tmp_bf_0, _tmp_bf_0, _INV_EIGHT)
                 self.R.read(self.round, _tmp_bf_0)
-                print('r: %s, Rc ' % self.round, ubinascii.hexlify(self.R.to(self.round)))
+                eprint('r: %s, Rc ' % self.round, ubinascii.hexlify(self.R.to(self.round)))
+                self.gc(13)
 
                 # PAPER LINES 21-22
                 _hash_cache_mash(self.w_round, self.hash_cache, self.L.to(self.round), self.R.to(self.round))
@@ -1859,11 +1869,12 @@ class BulletProofBuilder:
                 # PAPER LINES 24-25, fold {G~, H~}
                 _invert(self.winv, self.w_round)
                 self.gc(26)
-                print('r: %s, w0 ' % self.round, ubinascii.hexlify(self.w_round))
-                print('r: %s, wi ' % self.round, ubinascii.hexlify(self.winv))
+                eprint('r: %s, w0 ' % self.round, ubinascii.hexlify(self.w_round))
+                eprint('r: %s, wi ' % self.round, ubinascii.hexlify(self.winv))
 
                 # New blinding factors to use for newly folded vectors
                 self._prove_new_blindsN()
+                self.gc(14)
 
             else:
                 raise ValueError('Invalid state: %s' % self.offstate)
@@ -1872,6 +1883,7 @@ class BulletProofBuilder:
             self.offstate += 1
             print('Moved to state ', self.offstate)
 
+        self.gc(15)
         # In the round0 we do Trezor folding anyway due to G, H being only on the Trezor
         # Optimization: aprime, bprime could be computed on the Host (not implemented yet)
         if self.offstate >= 22:
@@ -1896,6 +1908,10 @@ class BulletProofBuilder:
         if self.Gprime is None:
             self._phase2_loop_body_r0init()
 
+        if self.round <= 1 and hasattr(self, 'l0'):
+            del (self.l0, self.l1, self.r0, self.r1)
+
+        self.gc(2)
         tmp = _ensure_dst_key()
         self._tmp_k_1 = _ensure_dst_key()
 
@@ -1912,9 +1928,10 @@ class BulletProofBuilder:
 
         cR = _sc_mul(cR, cR, ibls[5])  # unblind a1
         cR = _sc_mul(cR, cR, ibls[6])  # unblind b0
+        self.gc(10)
 
-        print('r: %s, cL ' % self.round, ubinascii.hexlify(cL))
-        print('r: %s, cR ' % self.round, ubinascii.hexlify(cR))
+        eprint('r: %s, cL ' % self.round, ubinascii.hexlify(cL))
+        eprint('r: %s, cR ' % self.round, ubinascii.hexlify(cR))
 
         # products from round 0 are not blinded as Gprime and Hprime are protocol constants
         if self.round == 0:
@@ -1931,15 +1948,17 @@ class BulletProofBuilder:
         _add_keys(LcA, LcA, _scalarmultH(self._tmp_k_1, tmp))
         _scalarmult_key(LcA, LcA, _INV_EIGHT)
         self.L.read(self.round, LcA)
+        self.gc(11)
 
         _add_keys(RcA, RcA, RcB)
         _sc_mul(tmp, cR, self.x_ip)
         _add_keys(RcA, RcA, _scalarmultH(self._tmp_k_1, tmp))
         _scalarmult_key(RcA, RcA, _INV_EIGHT)
         self.R.read(self.round, RcA)
+        self.gc(12)
 
-        print('r: %s, Lc ' % self.round, ubinascii.hexlify(self.L.to(self.round)))
-        print('r: %s, Rc ' % self.round, ubinascii.hexlify(self.R.to(self.round)))
+        eprint('r: %s, Lc ' % self.round, ubinascii.hexlify(self.L.to(self.round)))
+        eprint('r: %s, Rc ' % self.round, ubinascii.hexlify(self.R.to(self.round)))
 
         # PAPER LINES 21-22
         _hash_cache_mash(self.w_round, self.hash_cache, self.L.to(self.round), self.R.to(self.round))
@@ -1948,14 +1967,15 @@ class BulletProofBuilder:
 
         # PAPER LINES 24-25, fold {G~, H~}
         _invert(self.winv, self.w_round)
-        self.gc(26)
+        self.gc(13)
 
-        print('r: %s, w0 ' % self.round, ubinascii.hexlify(self.w_round))
-        print('r: %s, w1 ' % self.round, ubinascii.hexlify(self.winv))
+        eprint('r: %s, w0 ' % self.round, ubinascii.hexlify(self.w_round))
+        eprint('r: %s, w1 ' % self.round, ubinascii.hexlify(self.winv))
 
         # New blinding factors to use for newly folded vectors
         self._prove_new_blindsN()
         self.offstate, self.offpos = 3, 0
+        self.gc(14)
 
         # If the first round of the ofdot, we cannot do in
         if self.off_method >= 1 and self.round == 0:
@@ -2002,6 +2022,7 @@ class BulletProofBuilder:
             crypto.sc_mul_into(_tmp_sc_1, mi, bi)
             crypto.sc_mul_into(_tmp_sc_1, _tmp_sc_1, xi)
             crypto.encodeint_into(tconst[i], _tmp_sc_1)
+        self.gc(22)
         return tconst
 
     def _phase2_loop_fold(self, buffers):
@@ -2065,6 +2086,7 @@ class BulletProofBuilder:
             crypto.decodeint_into_noreduce(a0, _sc_mul(None, self.w_round, blinv[0]))
             crypto.decodeint_into_noreduce(b0, _sc_mul(None, self.winv, blinv[1]))
 
+        self.gc(12)
         if self.offstate in [3, 4]:  # G, H
             for i in range(0, tgt):
                 crypto.decodepoint_into(_tmp_pt_1, lo.to(i))
@@ -2091,6 +2113,7 @@ class BulletProofBuilder:
                 fld.read(i, _tmp_bf_0)
                 _gc_iter(i)
 
+        self.gc(15)
         # State transition
         self.offpos += tgt
         if self.offpos >= self.nprime:
@@ -2112,6 +2135,11 @@ class BulletProofBuilder:
             if self.round == 1:
                 del (self.Gprec2, self.Hprec2, self.yinvpowL, self.yinvpowR, self.HprimeL, self.HprimeR, self.tmp_pt)
 
+            if self.round == 1 and hasattr(self, 'l0'):
+                del (self.l0, self.l1, self.r0, self.r1)
+
+            self.gc(16)
+
             if inmem:
                 self.offstate = 10  # finish in-memory, _phase2_loop_full
 
@@ -2121,7 +2149,7 @@ class BulletProofBuilder:
             else:
                 self.offstate = 20  # manual cLcR
 
-            print('Moved to state %s' % self.offstate)
+            print('Moved to state', self.offstate)
 
             # Rotate blindings
             self._swap_blinds()
@@ -2168,6 +2196,7 @@ class BulletProofBuilder:
             self.MN, lambda i, d: _scalarmult_key(d, self.Hprec2.to(i), None, self.yinvpowR[i], self.tmp_pt)
         )
         self.Hprime = self.HprimeL
+        self.gc(34)
 
     def _phase2_loop_body(self):
         """
