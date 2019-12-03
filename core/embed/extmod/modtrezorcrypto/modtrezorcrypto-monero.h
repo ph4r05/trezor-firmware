@@ -614,6 +614,18 @@ STATIC MP_DEFINE_CONST_FUN_OBJ_VAR_BETWEEN(
     mod_trezorcrypto_monero_unpack256_modm_noreduce_obj, 1, 3,
     mod_trezorcrypto_monero_unpack256_modm_noreduce);
 
+#if MICROPY_PY_SYS_GETSIZEOF
+mp_obj_t mod_trezorcrypto_monero_unpack256_modm_unary_op(mp_unary_op_t op, mp_obj_t self_in) {
+  mp_obj_bignum256modm_t *self = MP_OBJ_PTR_MP_SCALAR(self_in);
+  switch (op) {
+    case MP_UNARY_OP_SIZEOF: {
+        return MP_OBJ_NEW_SMALL_INT(sizeof(*self));
+    }
+    default: return MP_OBJ_NULL; // op not supported
+  }
+}
+#endif
+
 //
 // GE25519 Defs
 //
@@ -909,6 +921,19 @@ STATIC mp_obj_t mod_trezorcrypto_monero_ge25519_unpack_vartime(
 STATIC MP_DEFINE_CONST_FUN_OBJ_VAR_BETWEEN(
     mod_trezorcrypto_monero_ge25519_unpack_vartime_obj, 1, 3,
     mod_trezorcrypto_monero_ge25519_unpack_vartime);
+
+
+#if MICROPY_PY_SYS_GETSIZEOF
+mp_obj_t mod_trezorcrypto_monero_ge25519_unary_op(mp_unary_op_t op, mp_obj_t self_in) {
+  mp_obj_ge25519_t *self = MP_OBJ_PTR_MP_GE25519(self_in);
+  switch (op) {
+    case MP_UNARY_OP_SIZEOF: {
+        return MP_OBJ_NEW_SMALL_INT(sizeof(*self));
+    }
+    default: return MP_OBJ_NULL; // op not supported
+  }
+}
+#endif
 
 //
 // XMR defs
@@ -1518,6 +1543,9 @@ STATIC const mp_obj_type_t mod_trezorcrypto_monero_ge25519_type = {
     {&mp_type_type},
     .name = MP_QSTR_Ge25519,
     .make_new = mod_trezorcrypto_monero_ge25519_make_new,
+#if MICROPY_PY_SYS_GETSIZEOF
+    .unary_op = mod_trezorcrypto_monero_ge25519_unary_op,
+#endif
     .locals_dict = (void *)&mod_trezorcrypto_monero_ge25519_locals_dict,
 };
 
@@ -1534,6 +1562,9 @@ STATIC const mp_obj_type_t mod_trezorcrypto_monero_bignum256modm_type = {
     {&mp_type_type},
     .name = MP_QSTR_Sc25519,
     .make_new = mod_trezorcrypto_monero_bignum256modm_make_new,
+#if MICROPY_PY_SYS_GETSIZEOF
+    .unary_op = mod_trezorcrypto_monero_unpack256_modm_unary_op,
+#endif
     .locals_dict = (void *)&mod_trezorcrypto_monero_bignum256modm_locals_dict,
 };
 
