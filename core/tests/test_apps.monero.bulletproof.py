@@ -681,6 +681,15 @@ class TestMoneroBulletproof(unittest.TestCase):
     def test_prove_batch16_off2(self):
         self.prove_batch_off(16)
 
+    def test_prove_batch4_off2(self):
+        self.prove_batch_off(4)
+
+    def test_prove_batch2_off2(self):
+        self.prove_batch_off(2)
+
+    def test_prove_batch1_off2(self):
+        self.prove_batch_off(1)
+
 
 if __name__ == "__main__":
     unittest.main()
