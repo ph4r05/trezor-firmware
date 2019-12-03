@@ -104,12 +104,16 @@ if __debug__:
             global BP
             p2 = msg.p2 if msg.p2 else 2
 
+            if msg.p1 == 0:
+                BPP(None)  # clear old state
+
             check_mem()
             from apps.monero.xmr import bulletproof as bp
             check_mem("BP Imported")
             from apps.monero.xmr import crypto
             check_mem("Crypto Imported")
             check_mem("+++BP START: %s; %s" % (msg.p1, p2))
+            gc.collect()
             log_trace("BP START")
 
             bpi, res = None, None
@@ -132,10 +136,12 @@ if __debug__:
 
             else:
                 bpi = BPP()
+                gc.collect()
                 bpi.gc_fnc = gc.collect
                 bpi.gc_trace = log_trace
                 res = bpi.prove_batch_off_step(msg.data3)
 
+            gc.collect()
             log_trace("BP STEP")
             check_mem("+++BP STEP")
             if isinstance(res, tuple) and res[0] == 1:
