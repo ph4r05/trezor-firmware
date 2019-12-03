@@ -510,7 +510,7 @@ class KeyVEval(KeyVBase):
     KeyVector computed / evaluated on demand
     """
 
-    __slots__ = ("current_idx", "size", "fnc", "raw", "scalar", "buff")
+    __slots__ = ("fnc", "raw", "scalar", "buff")
 
     def __init__(self, elems=64, src=None, raw=False, scalar=True):
         super().__init__(elems)
@@ -548,7 +548,7 @@ class KeyVSized(KeyVBase):
     (e.g., precomputed, but has to have exact size for further computations)
     """
 
-    __slots__ = ("current_idx", "size", "wrapped")
+    __slots__ = ("wrapped",)
 
     def __init__(self, wrapped, new_size):
         super().__init__(new_size)
@@ -567,7 +567,7 @@ class KeyVWrapped(KeyVBase):
     (e.g., precomputed, but has to have exact size for further computations)
     """
 
-    __slots__ = ("current_idx", "size", "wrapped")
+    __slots__ = ("wrapped",)
 
     def __init__(self, wrapped, new_size, raw=False, sc=True):
         super().__init__(new_size)
@@ -603,7 +603,7 @@ class KeyVWrapped(KeyVBase):
 
 
 class KeyVConst(KeyVBase):
-    __slots__ = ("current_idx", "size", "elem")
+    __slots__ = ("elem",)
 
     def __init__(self, size, elem, copy=True):
         super().__init__(size)
@@ -624,7 +624,7 @@ class KeyVPrecomp(KeyVBase):
     but possible to compute further
     """
 
-    __slots__ = ("current_idx", "size", "precomp_prefix", "aux_comp_fnc", "buff")
+    __slots__ = ("precomp_prefix", "aux_comp_fnc", "buff")
 
     def __init__(self, size, precomp_prefix, aux_comp_fnc):
         super().__init__(size)
@@ -652,7 +652,7 @@ class KeyVSliced(KeyVBase):
     Sliced in-memory vector version, remapping
     """
 
-    __slots__ = ("current_idx", "size", "wrapped", "offset")
+    __slots__ = ("wrapped", "offset")
 
     def __init__(self, src, start, stop):
         super().__init__(stop - start)
@@ -680,7 +680,7 @@ class KeyVPowers(KeyVBase):
     Vector of x^i. Allows only sequential access (no jumping). Resets on [0,1] access.
     """
 
-    __slots__ = ("current_idx", "size", "x", "raw", "cur", "last_idx")
+    __slots__ = ("x", "raw", "cur", "last_idx")
 
     def __init__(self, size, x, raw=False, **kwargs):
         super().__init__(size)
@@ -742,7 +742,7 @@ class KeyVPrngMask(KeyVBase):
     Vector of random elements. Allows only sequential access (no jumping). Resets on [0,1] access.
     """
 
-    __slots__ = ("current_idx", "size", "raw", "sc", "cur", "seed", "prng", "allow_nonlinear", "last_idx")
+    __slots__ = ("raw", "sc", "cur", "seed", "prng", "allow_nonlinear", "last_idx")
 
     def __init__(self, size, seed, raw=False, allow_nonlinear=False, **kwargs):
         super().__init__(size)
@@ -803,8 +803,6 @@ class KeyR0(KeyVBase):
     """
 
     __slots__ = (
-        "current_idx",
-        "size",
         "N",
         "aR",
         "raw",
