@@ -348,7 +348,7 @@ class KeyV(KeyVBase):
     Some chunk-dependent cases are not implemented as they are currently not needed in the BP.
     """
 
-    __slots__ = ("current_idx", "size", "d", "mv", "const", "cur", "chunked")
+    __slots__ = ("d", "mv", "const", "cur", "chunked")
 
     def __init__(self, elems=64, buffer=None, const=False, no_init=False):
         super().__init__(elems)
@@ -1208,6 +1208,20 @@ def _multiexp(dst=None, data=None, GiHi=False):
     return data.eval(dst, GiHi)
 
 
+def _e_xL(sv, idx, d=None, is_a=True):
+    j, i = idx // _BP_N, idx % _BP_N
+    r = None
+    if j >= len(sv):
+        r = _ZERO if is_a else _MINUS_ONE
+    elif sv[j][i // 8] & (1 << i % 8):
+        r = _ONE if is_a else _ZERO
+    else:
+        r = _ZERO if is_a else _MINUS_ONE
+    if d:
+        return memcpy(d, 0, r, 0, 32)
+    return r
+
+
 class BulletProofBuilder:
     def __init__(self):
         self.use_det_masks = True
@@ -1347,24 +1361,11 @@ class BulletProofBuilder:
         if self.gc_fnc:
             self.gc_fnc()
 
+
+
     def aX_vcts(self, sv, MN):
-        num_inp = len(sv)
-
-        def e_xL(idx, d=None, is_a=True):
-            j, i = idx // _BP_N, idx % _BP_N
-            r = None
-            if j >= num_inp:
-                r = _ZERO if is_a else _MINUS_ONE
-            elif sv[j][i // 8] & (1 << i % 8):
-                r = _ONE if is_a else _ZERO
-            else:
-                r = _ZERO if is_a else _MINUS_ONE
-            if d:
-                return memcpy(d, 0, r, 0, 32)
-            return r
-
-        aL = KeyVEval(MN, lambda i, d: e_xL(i, d, True))
-        aR = KeyVEval(MN, lambda i, d: e_xL(i, d, False))
+        aL = KeyVEval(MN, lambda i, d: _e_xL(sv, i, d, True))
+        aR = KeyVEval(MN, lambda i, d: _e_xL(sv, i, d, False))
         return aL, aR
 
     def _det_mask_init(self):
