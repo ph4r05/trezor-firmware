@@ -41,6 +41,8 @@
 #endif
 
 // memory allocation policies
+#define MICROPY_PY_SYS_GETSIZEOF (1)
+#define MPZ_DIG_SIZE (16)
 #define MICROPY_ALLOC_PATH_MAX      (PATH_MAX)
 #define MICROPY_MALLOC_USES_ALLOCATED_SIZE (1)
 #define MICROPY_MEM_STATS           (1)

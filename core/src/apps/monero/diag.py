@@ -133,13 +133,36 @@ if __debug__:
 
                 res = bpi.prove_batch_off(sv, gamma)
                 BPP(bpi)
+                bpi.dump_state()
+
+                # state = bp.BpState()
+                # bpi.dump_state(state)
+                # BPP(state)
+                # del(bpi)
+                # gc.collect()
+                # log_trace("BPI removed")
 
             else:
                 bpi = BPP()
                 gc.collect()
+                # state = BPP()
+                # bp.PRNG = crypto.prng(bp._ZERO)
+                # bpi = bp.BulletProofBuilder()
                 bpi.gc_fnc = gc.collect
                 bpi.gc_trace = log_trace
+                # state.to_bpi(bpi)
+                # BPP(None)
+                # del(state)
+                # gc.collect()
+                # log_trace("From state")
                 res = bpi.prove_batch_off_step(msg.data3)
+                bpi.dump_state()
+                # state = bp.BpState()
+                # bpi.dump_state(state)
+                # BPP(state)
+                # del(bpi)
+                # gc.collect()
+                # log_trace("BPI removed")
 
             gc.collect()
             log_trace("BP STEP")

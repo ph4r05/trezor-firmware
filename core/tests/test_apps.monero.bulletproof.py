@@ -109,11 +109,45 @@ if not utils.BITCOIN_ONLY:
         return dst
 
 
+def dumpc(data):
+    c = -1
+    acc = []
+    def pacc(acc):
+        print("\"%s\"" % "".join(["\\x%02x" % x for x in acc]))
+
+    for i in data:
+        c += 1
+        acc.append(i)
+        if c > 0 and c % 15 == 0:
+            pacc(acc)
+            c = -1
+            acc = []
+    pacc(acc)
+
+
 @unittest.skipUnless(not utils.BITCOIN_ONLY, "altcoin")
 class TestMoneroBulletproof(unittest.TestCase):
 
     def test_1(self):
         pass
+
+    def xtest_constantize(self):
+        bpi = bp.BulletProofBuilder()
+        Gi = bp.KeyV(64*16)
+        Hi = bp.KeyV(64*16)
+        for i in range(64*16):
+            bp._get_exponent(Gi[i], bp._XMR_H, i * 2 + 1)
+            bp._get_exponent(Hi[i], bp._XMR_H, i * 2)
+
+        import ubinascii
+        # print(ubinascii.hexlify(Gi.d))
+        dumpc(Gi.d)
+        print('='*80)
+        dumpc(Hi.d)
+        print('='*80)
+        import sys
+        sys.exit(1)
+
 
     def mask_consistency_check(self, bpi):
         sv = [crypto.sc_init(123)]
@@ -680,6 +714,9 @@ class TestMoneroBulletproof(unittest.TestCase):
 
     def test_prove_batch16_off2(self):
         self.prove_batch_off(16)
+
+    def test_prove_batch8_off2(self):
+        self.prove_batch_off(8)
 
     def test_prove_batch4_off2(self):
         self.prove_batch_off(4)

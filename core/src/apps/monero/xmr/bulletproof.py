@@ -1,8 +1,10 @@
 import gc
 from micropython import const
 import ubinascii
+import sys
 from trezor import utils
 from trezor.utils import memcpy as tmemcpy
+from trezor.crypto.hashlib import sha256
 
 from apps.monero.xmr import crypto
 from apps.monero.xmr.serialize.int_serialize import dump_uvarint_b_into, uvarint_size
@@ -275,6 +277,115 @@ def _get_exponent(dst, base, idx):
 # Key Vectors
 #
 
+SIZE_BOOL = 1
+SIZE_INT = 8
+SIZE_SC = 32
+SIZE_PT = 32
+SIZE_PT_FULL = 10*32*4
+SIZE_SC_FULL = 9*32
+
+
+def sizeof(x):
+    try:
+        return sys.getsizeof(x)
+    except:
+        return 0
+
+
+def getcells(x):
+    try:
+        return sys.getcells(x)
+    except:
+        return tuple()
+
+
+class SizeCounter:
+    def __init__(self, real=False, do_track=True, do_trace=False):
+        self.real = real
+        self.do_track = do_track
+        self.do_trace = do_trace
+        self.track = set() if do_track else None
+        self.trace = [] if do_trace else None
+        self.acc = 0
+        self._clos = lambda x: x*int(do_track)*int(do_trace)
+        self._lambda = lambda x: 0
+
+    def comp_size(self, v, name=None, real=False):
+        if v is None:
+            return 0
+
+        real = self.real if self else real
+        tp = type(v)
+        iid = id(v)
+        addc = True
+
+        if self and self.do_track and not isinstance(v, (int, bool, float)):
+            if iid in self.track:
+                return 0
+            else:
+                self.track.add(iid)
+
+        c = 0
+        if tp in (KeyV, KeyVPowers, KeyVEval, KeyVPrecomp, KeyR0, KeyVPrngMask):
+            c = v.getsize(real, name, sslot_sizes=self.slot_sizes)
+        elif tp == type(_tmp_sc_1):
+            c = SIZE_SC if not real else sizeof(v)
+        elif tp == type(_tmp_pt_1):
+            c = SIZE_PT if not real else sizeof(v)
+        elif tp == int:
+            c = SIZE_INT if not real else sizeof(v)
+        elif tp == bool:
+            c = 1 if not real else sizeof(v)
+        elif tp == bytearray:
+            c = len(v) if not real else sizeof(v)
+        elif tp == bytes:
+            c = len(v) if not real else sizeof(v)
+        elif tp == str:
+            c = len(v) if not real else sizeof(v)
+        elif tp == memoryview:
+            c = len(v) if not real else sizeof(v)
+        elif tp == type(self._lambda):
+            cc = 1 if not real else sizeof(1)
+        elif tp == type(self._clos):
+            cc = 1 if not real else sizeof(v)
+            self.acc += cc
+            c = sum([self.comp_size(x, "%s[%s, %s]" % (name, i, type(x))) for i, x in enumerate(getcells(v))]) + cc
+            addc = False
+
+        elif tp == list or tp == tuple:
+            cc = 0 if not real else sizeof(v)
+            self.acc += cc
+            c = sum([self.comp_size(x, "%s[%s, %s]" % (name, i, type(x))) for i, x in enumerate(v)]) + cc
+            addc = False
+
+        else:
+            print('Unknown type: ', name, ', v', v, ', tp', tp)
+            return 0
+
+        if addc:
+            self.acc += c
+        if self.do_trace:
+            self.trace.append((name, c))
+        return c
+
+    def slot_sizes(self, obj, slots, real=False, name=""):
+        if not slots or not obj:
+            return 0
+        return sum([self.comp_size(getattr(obj, x, None), '%s.%s' % (name, x)) for x in slots])
+
+    def report(self):
+        if not self.do_trace:
+            return
+        for x in self.trace:
+            print(' .. %s : %s' % x)
+
+
+def slot_sizes(obj, slots, real=False, name=""):
+    return 0
+
+def comp_size(v, name=None, real=False):
+    return SizeCounter(real, False).comp_size(v, name)
+
 
 class KeyVBase:
     """
@@ -328,6 +439,13 @@ class KeyVBase:
 
     def slice_view(self, start, stop):
         return KeyVSliced(self, start, stop)
+
+    def getsize(self, real=False, name="", sslot_sizes=slot_sizes):
+        p = 0  # super().getsize(real, name, sslot_sizes) if isinstance(super(), KeyVBase) else 0
+        return p + 2 * SIZE_INT if not real else (p + sizeof(KeyVBaseNULL) + sslot_sizes(self, KeyVBase.__slots__, real, name))
+
+
+KeyVBaseNULL = KeyVBase()
 
 
 _CHBITS = const(5)
@@ -504,6 +622,12 @@ class KeyV(KeyVBase):
                     nsize << 5 if i <= nsize >> _CHBITS else (nsize & _CHSIZE) << 5,
                 )
 
+    def getsize(self, real=False, name="", sslot_sizes=slot_sizes):
+        p = super().getsize(real, name, sslot_sizes)
+        if self.const:
+            return (p + 2 + SIZE_SC + 2) if not real else (p + sizeof(self) + sslot_sizes(self, ("mv", "const", "cur", "chunked"), real, name))
+        return (p + 2 + SIZE_SC + 2 + self.size * SIZE_SC) if not real else (p + sizeof(self) + sslot_sizes(self, KeyV.__slots__, real, name))
+
 
 class KeyVEval(KeyVBase):
     """
@@ -541,6 +665,10 @@ class KeyVEval(KeyVBase):
             memcpy(buff, offset, self.buff, 0, 32)
         return buff if buff else self.buff
 
+    def getsize(self, real=False, name="", sslot_sizes=slot_sizes):
+        p = super().getsize(real, name, sslot_sizes)
+        return (p + 2 + 2 * SIZE_SC) if not real else (p + sizeof(self) + sslot_sizes(self, self.__slots__, real, name))
+
 
 class KeyVSized(KeyVBase):
     """
@@ -559,6 +687,10 @@ class KeyVSized(KeyVBase):
 
     def __setitem__(self, key, value):
         self.wrapped[self.idxize(key)] = value
+
+    def getsize(self, real=False, name="", sslot_sizes=slot_sizes):
+        p = super().getsize(real, name, sslot_sizes)
+        return (p + 1) if not real else (p + sizeof(self) + sslot_sizes(self, self.__slots__, real, name))
 
 
 class KeyVWrapped(KeyVBase):
@@ -601,6 +733,10 @@ class KeyVWrapped(KeyVBase):
         else:
             return memcpy(self.wrapped[self.idxize(idx)], 0, buff, offset, 32)
 
+    def getsize(self, real=False, name="", sslot_sizes=slot_sizes):
+        p = super().getsize(real, name, sslot_sizes)
+        return (p + 2 + 2 * SIZE_SC) if not real else (p + sizeof(self) + sslot_sizes(self, self.__slots__, real, name))
+
 
 class KeyVConst(KeyVBase):
     __slots__ = ("elem",)
@@ -615,6 +751,10 @@ class KeyVConst(KeyVBase):
     def to(self, idx, buff=None, offset=0):
         memcpy(buff, offset, self.elem, 0, 32)
         return buff if buff else self.elem
+
+    def getsize(self, real=False, name="", sslot_sizes=slot_sizes):
+        p = super().getsize(real, name, sslot_sizes)
+        return (p + SIZE_SC) if not real else (p + sizeof(self) + sslot_sizes(self, self.__slots__, real, name))
 
 
 class KeyVPrecomp(KeyVBase):
@@ -646,6 +786,10 @@ class KeyVPrecomp(KeyVBase):
         memcpy(buff, offset, self.buff, 0, 32)
         return buff if buff else self.buff
 
+    def getsize(self, real=False, name="", sslot_sizes=slot_sizes):
+        p = super().getsize(real, name, sslot_sizes)
+        return (p + 2 + SIZE_SC) if not real else (p + sizeof(self) + sslot_sizes(self, self.__slots__, real, name))
+
 
 class KeyVSliced(KeyVBase):
     """
@@ -673,6 +817,10 @@ class KeyVSliced(KeyVBase):
 
     def read(self, idx, buff, offset=0):
         return self.wrapped.read(self.offset + self.idxize(idx), buff, offset)
+
+    def getsize(self, real=False, name="", sslot_sizes=slot_sizes):
+        p = super().getsize(real, name, sslot_sizes)
+        return (p + 2) if not real else (p + sizeof(self) + sslot_sizes(self, self.__slots__, real, name))
 
 
 class KeyVPowers(KeyVBase):
@@ -737,6 +885,11 @@ class KeyVPowers(KeyVBase):
         else:
             return _copy_key(self.cur, val)
 
+    def getsize(self, real=False, name="", sslot_sizes=slot_sizes):
+        p = super().getsize(real, name, sslot_sizes)
+        return (p + 2 + 2 * SIZE_SC) if not real else (p + sizeof(self) + sslot_sizes(self, self.__slots__, real, name))
+
+
 class KeyVPrngMask(KeyVBase):
     """
     Vector of random elements. Allows only sequential access (no jumping). Resets on [0,1] access.
@@ -791,6 +944,10 @@ class KeyVPrngMask(KeyVBase):
             return self[idx]
         buff = _ensure_dst_key(buff)
         return memcpy(buff, offset, self[idx], 0, 32)
+
+    def getsize(self, real=False, name="", sslot_sizes=slot_sizes):
+        p = super().getsize(real, name, sslot_sizes)
+        return (p + 3 + 4 * SIZE_SC) if not real else (p + sizeof(self) + sslot_sizes(self, self.__slots__, real, name))
 
 
 class KeyR0(KeyVBase):
@@ -883,6 +1040,10 @@ class KeyR0(KeyVBase):
         if buff is None:
             return r
         return memcpy(buff, offset, r, 0, 32)
+
+    def getsize(self, real=False, name="", sslot_sizes=slot_sizes):
+        p = super().getsize(real, name, sslot_sizes)
+        return (p + 4 + 7 * SIZE_SC) if not real else (p + sizeof(self) + sslot_sizes(self, self.__slots__, real, name))
 
 
 def _ensure_dst_keyvect(dst=None, size=None):
@@ -1220,6 +1381,101 @@ def _e_xL(sv, idx, d=None, is_a=True):
     return r
 
 
+class BpState:
+    def __init__(self, **kwargs):
+        self.proof_sec = None
+        self.batching = 32
+        self.off_method = 0
+        self.off2_thresh = 32
+
+        # self.Gprec = None
+        # self.Hprec = None
+        # self.twoN = None
+
+        self.MN = 1
+        self.M = 1
+        self.logMN = 1
+        self.gamma = None
+        self.V = None
+        self.A = None
+        self.S = None
+        self.T1 = None
+        self.T2 = None
+        self.tau1 = None
+        self.tau2 = None
+        self.taux = None
+        self.mu = None
+        self.t = None
+        self.ts = None
+        self.x = None
+        self.x_ip = None
+        self.y = None
+        self.z = None
+        self.zc = None
+        self.l = None
+        self.r = None
+        self.hash_cache = None
+        self.l0 = None
+        self.l1 = None
+        self.r0 = None
+        self.r1 = None
+        self.nprime = None
+        self.round = 0
+        self.rho = None
+        self.alpha = None
+        self.Gprec2 = None
+        self.Hprec2 = None
+        self.Xprime = [None, None, None, None]
+
+        self.L = None
+        self.R = None
+        self.w_round = None
+        self.winv = None
+        self.cL = None
+        self.cR = None
+        self.LcA = None
+        self.LcB = None
+        self.RcA = None
+        self.RcB = None
+        self.tmp_k_1 = None
+        self.yinvpowL = None
+        self.yinvpowR = None
+        self.tmp_pt = None
+        self.HprimeL = None
+        self.HprimeR = None
+        self.a = None
+        self.b = None
+
+        self.offstate = 0
+        self.offpos = 0
+
+        # 2 blinds per vector, one for lo, one for hi. 2*i, 2*i+1. Ordering G, H, a, b
+        # blinds[0] current blinds
+        # blinds[1] new blinds
+        self.blinds = [[], []]
+
+        for kw in kwargs:
+            setattr(self, kw, kwargs[kw])
+
+    def to_bpi(self, bpi):
+        for x in dir(self):
+            if x.startswith('__'):
+                continue
+            v = getattr(self, x)
+            if v is None:
+                continue
+            if type(v) == type(self.to_bpi):
+                continue
+            if type(v) == type(_cross_inner_product):
+                continue
+            # print(x, type(v))
+
+            if bpi:
+                print('R', x, type(v))
+                setattr(bpi, x, v)
+                setattr(self, x, None)
+
+
 class BulletProofBuilder:
     def __init__(self):
         self.use_det_masks = True
@@ -1320,6 +1576,41 @@ class BulletProofBuilder:
         # blinds[0] current blinds
         # blinds[1] new blinds
         self.blinds = [[], []]
+
+    def dump_state(self, state=None):
+        ctr_i = SizeCounter(False, False, False)
+        ctr_r = SizeCounter(True, True, True)
+
+        for x in dir(self):
+            if x.startswith('__'):
+                continue
+
+            v = getattr(self, x, None)
+            if v is None:
+                continue
+            if x in ('Gprime', 'Hprime', 'aprime', 'bprime', 'gc_fnc'):
+                continue
+            tp = type(v)
+            if tp == type(self.dump_state):
+                continue
+            if tp == type(_cross_inner_product):
+                continue
+
+            ctr_i.comp_size(v, x)
+            ctr_r.comp_size(v, x)
+
+            if state and hasattr(state, x):
+                print(x, type(v))
+                setattr(state, x, v)
+                setattr(self, x, None)
+
+        print('!!!!!!!!!!!!!!!!Dump finished: ', ctr_i.acc, ': r: ', ctr_r.acc)
+        ctr_i.report()
+        ctr_r.report()
+        # print(comp_size(bytearray(32*32), real=True))
+        # print(comp_size(KeyV(32), real=True))
+        # print(comp_size(self.Xprime, real=True))
+        # print(self.Xprime)
 
     @property
     def Gprime(self):
