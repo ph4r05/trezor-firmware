@@ -1292,7 +1292,7 @@ class BulletProofBuilder:
         self.LcB = None
         self.RcA = None
         self.RcB = None
-        self._tmp_k_1 = None
+        self.tmp_k_1 = None
         self.yinvpowL = None
         self.yinvpowR = None
         self.tmp_pt = None
@@ -1311,19 +1311,19 @@ class BulletProofBuilder:
 
     @property
     def Gprime(self):
-        return self.Xprime[0]
+        return self.Xprime[0] if self.Xprime else None
 
     @property
     def Hprime(self):
-        return self.Xprime[1]
+        return self.Xprime[1] if self.Xprime else None
 
     @property
     def aprime(self):
-        return self.Xprime[2]
+        return self.Xprime[2] if self.Xprime else None
 
     @property
     def bprime(self):
-        return self.Xprime[3]
+        return self.Xprime[3] if self.Xprime else None
 
     @Gprime.setter
     def Gprime(self, val):
@@ -1672,8 +1672,11 @@ class BulletProofBuilder:
         Computes l, r vectors per chunks
         """
         print('Phase1_lr, state: %s, off: %s, MN: %s' % (self.offstate, self.offpos, self.MN))
+        self.gc(2)
         l = KeyV(self.batching)
+        self.gc(3)
         r = KeyV(self.batching)
+        self.gc(4)
 
         for i in range(self.offpos, self.offpos + self.batching):
             bloff = int(i >= (self.MN >> 1))
@@ -1693,7 +1696,7 @@ class BulletProofBuilder:
             print('Moving to next state')
             self.offstate = 1
             self.offpos = 0
-
+        self.gc(5)
         return l.d, r.d
 
     def phase1_post(self):
@@ -1709,14 +1712,15 @@ class BulletProofBuilder:
         _sc_mul(_tmp_bf_0, self.x, self.x)
         _sc_muladd(self.taux, self.tau2, _tmp_bf_0, self.taux)
         del (self.tau1, self.tau2)
+        self.gc(10)
 
         zpow = crypto.sc_mul_into(None, self.zc, self.zc)
         for j in range(1, len(self.V) + 1):
             _sc_muladd(self.taux, None, self.gamma[j - 1], self.taux, a_raw=zpow)
             crypto.sc_mul_into(zpow, zpow, self.zc)
         del (self.zc, zpow)
-
         self.gc(18)
+
         self.mu = _ensure_dst_key()
         _sc_muladd(self.mu, self.x, self.rho, self.alpha)
         del (self.rho, self.alpha)
@@ -1735,6 +1739,7 @@ class BulletProofBuilder:
         print('MN: %s, nprime: %s' % (self.MN, self.nprime))
         self.L = _ensure_dst_keyvect(None, self.logMN)
         self.R = _ensure_dst_keyvect(None, self.logMN)
+        self.gc(20)
 
         if self.l is None:
             self.l = []
@@ -1803,6 +1808,7 @@ class BulletProofBuilder:
         XcA = self.LcA if self.offstate == 20 else self.RcA
         XcB = self.LcB if self.offstate == 20 else self.RcB
         tmp = _ensure_dst_key()
+        self.gc(2)
 
         for i in range(len(a)):
             _sc_muladd(cX, a.to(i), b.to(i), cX)  # cX dot product
@@ -1844,7 +1850,7 @@ class BulletProofBuilder:
                 eprint('r: %s, cL ' % self.round, ubinascii.hexlify(self.cL))
                 _add_keys(_tmp_bf_0, self.LcA, self.LcB)
                 _sc_mul(tmp, self.cL, self.x_ip)
-                _add_keys(_tmp_bf_0, _tmp_bf_0, _scalarmultH(self._tmp_k_1, tmp))
+                _add_keys(_tmp_bf_0, _tmp_bf_0, _scalarmultH(self.tmp_k_1, tmp))
                 _scalarmult_key(_tmp_bf_0, _tmp_bf_0, _INV_EIGHT)
                 self.L.read(self.round, _tmp_bf_0)
                 eprint('r: %s, Lc ' % self.round, ubinascii.hexlify(self.L.to(self.round)))
@@ -1855,7 +1861,7 @@ class BulletProofBuilder:
                 eprint('r: %s, cR ' % self.round, ubinascii.hexlify(self.cR))
                 _add_keys(_tmp_bf_0, self.RcA, self.RcB)
                 _sc_mul(tmp, self.cR, self.x_ip)
-                _add_keys(_tmp_bf_0, _tmp_bf_0, _scalarmultH(self._tmp_k_1, tmp))
+                _add_keys(_tmp_bf_0, _tmp_bf_0, _scalarmultH(self.tmp_k_1, tmp))
                 _scalarmult_key(_tmp_bf_0, _tmp_bf_0, _INV_EIGHT)
                 self.R.read(self.round, _tmp_bf_0)
                 eprint('r: %s, Rc ' % self.round, ubinascii.hexlify(self.R.to(self.round)))
@@ -1913,7 +1919,7 @@ class BulletProofBuilder:
 
         self.gc(2)
         tmp = _ensure_dst_key()
-        self._tmp_k_1 = _ensure_dst_key()
+        self.tmp_k_1 = _ensure_dst_key()
 
         cL, cR = buffers[0], buffers[1]
         LcA, LcB = buffers[2], buffers[3]
@@ -1945,14 +1951,14 @@ class BulletProofBuilder:
 
         _add_keys(LcA, LcA, LcB)
         _sc_mul(tmp, cL, self.x_ip)
-        _add_keys(LcA, LcA, _scalarmultH(self._tmp_k_1, tmp))
+        _add_keys(LcA, LcA, _scalarmultH(self.tmp_k_1, tmp))
         _scalarmult_key(LcA, LcA, _INV_EIGHT)
         self.L.read(self.round, LcA)
         self.gc(11)
 
         _add_keys(RcA, RcA, RcB)
         _sc_mul(tmp, cR, self.x_ip)
-        _add_keys(RcA, RcA, _scalarmultH(self._tmp_k_1, tmp))
+        _add_keys(RcA, RcA, _scalarmultH(self.tmp_k_1, tmp))
         _scalarmult_key(RcA, RcA, _INV_EIGHT)
         self.R.read(self.round, RcA)
         self.gc(12)
@@ -2031,6 +2037,7 @@ class BulletProofBuilder:
         States: 3, 4, 5, 6
         """
         print('phase2_loop_fold, state: %s, off: %s, round: %s, nprime: %s, btch: %s' % (self.offstate, self.offpos, self.round, self.nprime, self.batching))
+        self.gc(2)
 
         # Input buffer processing.
         # The first round has in-memory G, H buffers
@@ -2052,6 +2059,7 @@ class BulletProofBuilder:
             lo, hi = KeyV(len(buffers[0])//32, buffers[0]), KeyV(len(buffers[1])//32, buffers[1])
 
         # In memory caching from some point
+        self.gc(5)
         utils.ensure(self.off_method != 2 or self.off2_thresh <= self.nprime_thresh, "off2 threshold invalid")
         inmem = self.round > 0 and (self.nprime <= self.nprime_thresh or (self.off_method == 2 and self.nprime <= self.off2_thresh))
         fld = None
@@ -2066,6 +2074,7 @@ class BulletProofBuilder:
 
         # Consider blinding by halves
         # Folding has 4 different blind masks
+        self.gc(10)
         if self.round == 0 and self.offstate in [3, 4]:
             blinv = (_ONE, _ONE)  # no blinding for in-memory Gprime, Hprime in the round 0
         else:
@@ -2251,7 +2260,7 @@ class BulletProofBuilder:
             self.yinvpowR.set_state(self.yinvpowL.last_idx, self.yinvpowL.cur)
 
         _sc_mul(self.tmp, cL, self.x_ip)
-        _add_keys(_tmp_bf_0, _tmp_bf_0, _scalarmultH(self._tmp_k_1, self.tmp))
+        _add_keys(_tmp_bf_0, _tmp_bf_0, _scalarmultH(self.tmp_k_1, self.tmp))
         _scalarmult_key(_tmp_bf_0, _tmp_bf_0, _INV_EIGHT)
         self.L.read(self.round, _tmp_bf_0)
         self.gc(24)
@@ -2267,7 +2276,7 @@ class BulletProofBuilder:
         )
 
         _sc_mul(self.tmp, cR, self.x_ip)
-        _add_keys(_tmp_bf_0, _tmp_bf_0, _scalarmultH(self._tmp_k_1, self.tmp))
+        _add_keys(_tmp_bf_0, _tmp_bf_0, _scalarmultH(self.tmp_k_1, self.tmp))
         _scalarmult_key(_tmp_bf_0, _tmp_bf_0, _INV_EIGHT)
         self.R.read(self.round, _tmp_bf_0)
         self.gc(25)
@@ -2352,7 +2361,7 @@ class BulletProofBuilder:
         self.winv = _ensure_dst_key()
         self.w_round = _ensure_dst_key()
         self.tmp = _ensure_dst_key()
-        self._tmp_k_1 = _ensure_dst_key()
+        self.tmp_k_1 = _ensure_dst_key()
         self.round = 0
 
         # PAPER LINE 13
