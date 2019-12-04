@@ -440,6 +440,12 @@ class KeyVBase:
     def slice_view(self, start, stop):
         return KeyVSliced(self, start, stop)
 
+    def sdump(self):
+        return None
+
+    def sload(self, st):
+        return None
+
     def getsize(self, real=False, name="", sslot_sizes=slot_sizes):
         p = 0  # super().getsize(real, name, sslot_sizes) if isinstance(super(), KeyVBase) else 0
         return p + 2 * SIZE_INT if not real else (p + sizeof(KeyVBaseNULL) + sslot_sizes(self, KeyVBase.__slots__, real, name))
@@ -468,7 +474,7 @@ class KeyV(KeyVBase):
 
     __slots__ = ("d", "mv", "const", "cur", "chunked")
 
-    def __init__(self, elems=64, buffer=None, const=False, no_init=False):
+    def __init__(self, elems=64, buffer=None, const=False, no_init=False, buffer_chunked=False):
         super().__init__(elems)
         self.d = None
         self.mv = None
@@ -479,7 +485,8 @@ class KeyV(KeyVBase):
             pass
         elif buffer:
             self.d = buffer  # can be immutable (bytes)
-            self.size = len(buffer) // 32
+            self.size = len(buffer) // 32 if not buffer_chunked else elems
+            self.chunked = buffer_chunked
         else:
             self._set_d(elems)
 
@@ -621,6 +628,16 @@ class KeyV(KeyVBase):
                     (offset & (_CHSIZE - 1)) << 5 if i == 0 else 0,
                     nsize << 5 if i <= nsize >> _CHBITS else (nsize & _CHSIZE) << 5,
                 )
+
+    def sdump(self):
+        utils.ensure(self.size <= const(1152921504606846976), "Size too big")
+        return self.d, (self.size | self.chunked << 60)  # packing saves 8B for boolean (self.chunked)
+
+    def sload(self, st):
+        self.d, s = st
+        self.size = s &(~(1<<60))
+        self.chunked = s & (1<<60)
+        self._set_mv()
 
     def getsize(self, real=False, name="", sslot_sizes=slot_sizes):
         p = super().getsize(real, name, sslot_sizes)
@@ -798,7 +815,8 @@ class KeyVSliced(KeyVBase):
 
     __slots__ = ("wrapped", "offset")
 
-    def __init__(self, src, start, stop):
+    def __init__(self, src, start=0, stop=None):
+        stop = stop if stop is not None else len(src)
         super().__init__(stop - start)
         self.wrapped = src
         self.offset = start
@@ -885,6 +903,12 @@ class KeyVPowers(KeyVBase):
         else:
             return _copy_key(self.cur, val)
 
+    def sdump(self):
+        return self.cur, self.last_idx
+
+    def sload(self, rec):
+        self.cur, self.last_idx = rec
+
     def getsize(self, real=False, name="", sslot_sizes=slot_sizes):
         p = super().getsize(real, name, sslot_sizes)
         return (p + 2 + 2 * SIZE_SC) if not real else (p + sizeof(self) + sslot_sizes(self, self.__slots__, real, name))
@@ -944,6 +968,13 @@ class KeyVPrngMask(KeyVBase):
             return self[idx]
         buff = _ensure_dst_key(buff)
         return memcpy(buff, offset, self[idx], 0, 32)
+
+    def sdump(self):
+        return self.last_idx, self.prng, self.cur
+
+    def sload(self, st):
+        self.last_idx, self.prng, self.cur = st
+        crypto.decodeint_into(self.sc, self.cur)
 
     def getsize(self, real=False, name="", sslot_sizes=slot_sizes):
         p = super().getsize(real, name, sslot_sizes)
@@ -1040,6 +1071,12 @@ class KeyR0(KeyVBase):
         if buff is None:
             return r
         return memcpy(buff, offset, r, 0, 32)
+
+    def sdump(self):
+        return self.yp, self.zt, self.p2, self.last_idx
+
+    def sload(self, st):
+        self.yp, self.zt, self.p2, self.last_idx = st
 
     def getsize(self, real=False, name="", sslot_sizes=slot_sizes):
         p = super().getsize(real, name, sslot_sizes)
@@ -1381,102 +1418,17 @@ def _e_xL(sv, idx, d=None, is_a=True):
     return r
 
 
-class BpState:
-    def __init__(self, **kwargs):
-        self.proof_sec = None
-        self.batching = 32
-        self.off_method = 0
-        self.off2_thresh = 32
-
-        # self.Gprec = None
-        # self.Hprec = None
-        # self.twoN = None
-
-        self.MN = 1
-        self.M = 1
-        self.logMN = 1
-        self.gamma = None
-        self.V = None
-        self.A = None
-        self.S = None
-        self.T1 = None
-        self.T2 = None
-        self.tau1 = None
-        self.tau2 = None
-        self.taux = None
-        self.mu = None
-        self.t = None
-        self.ts = None
-        self.x = None
-        self.x_ip = None
-        self.y = None
-        self.z = None
-        self.zc = None
-        self.l = None
-        self.r = None
-        self.hash_cache = None
-        self.l0 = None
-        self.l1 = None
-        self.r0 = None
-        self.r1 = None
-        self.nprime = None
-        self.round = 0
-        self.rho = None
-        self.alpha = None
-        self.Gprec2 = None
-        self.Hprec2 = None
-        self.Xprime = [None, None, None, None]
-
-        self.L = None
-        self.R = None
-        self.w_round = None
-        self.winv = None
-        self.cL = None
-        self.cR = None
-        self.LcA = None
-        self.LcB = None
-        self.RcA = None
-        self.RcB = None
-        self.tmp_k_1 = None
-        self.yinvpowL = None
-        self.yinvpowR = None
-        self.tmp_pt = None
-        self.HprimeL = None
-        self.HprimeR = None
-        self.a = None
-        self.b = None
-
-        self.offstate = 0
-        self.offpos = 0
-
-        # 2 blinds per vector, one for lo, one for hi. 2*i, 2*i+1. Ordering G, H, a, b
-        # blinds[0] current blinds
-        # blinds[1] new blinds
-        self.blinds = [[], []]
-
-        for kw in kwargs:
-            setattr(self, kw, kwargs[kw])
-
-    def to_bpi(self, bpi):
-        for x in dir(self):
-            if x.startswith('__'):
-                continue
-            v = getattr(self, x)
-            if v is None:
-                continue
-            if type(v) == type(self.to_bpi):
-                continue
-            if type(v) == type(_cross_inner_product):
-                continue
-            # print(x, type(v))
-
-            if bpi:
-                print('R', x, type(v))
-                setattr(bpi, x, v)
-                setattr(self, x, None)
-
-
 class BulletProofBuilder:
+    COUNT_STATE = True
+    STATE_VARS = ('use_det_masks', 'proof_sec',
+                  'do_blind', 'offload', 'batching', 'off_method', 'nprime_thresh', 'off2_thresh',
+                  'MN', 'M', 'logMN', 'sv', 'gamma',
+                  'A', 'S', 'T1', 'T2', 'tau1', 'tau2', 'taux', 'mu', 't', 'ts', 'x', 'x_ip', 'y', 'z', 'zc',  # V
+                  'l0l1r0r1st', 'hash_cache', 'nprime', 'round', 'rho', 'alpha', 'Xbuffs',  # l, r
+                  'w_round', 'winv', 'cL', 'cR', 'LcA', 'LcB', 'RcA', 'RcB',
+                  'HprimeLRst', 'a', 'b',
+                  'offstate', 'offpos', 'blinds')
+
     def __init__(self):
         self.use_det_masks = True
         self.proof_sec = None
@@ -1518,6 +1470,7 @@ class BulletProofBuilder:
         self.MN = 1
         self.M = 1
         self.logMN = 1
+        self.sv = None
         self.gamma = None
         self.V = None
         self.A = None
@@ -1537,15 +1490,13 @@ class BulletProofBuilder:
         self.zc = None
         self.l = None
         self.r = None
+        self.l0l1r0r1st = None
         self.hash_cache = None
-        self.l0 = None
-        self.l1 = None
-        self.r0 = None
-        self.r1 = None
         self.nprime = None
         self.round = 0
         self.rho = None
         self.alpha = None
+        self.Xbuffs = [None, None, None, None, None, None, None]  # Gprime, Hprime, aprime, bprime, L, R, V
         self.Gprec2 = None
         self.Hprec2 = None
         self.Xprime = [None, None, None, None]
@@ -1566,6 +1517,7 @@ class BulletProofBuilder:
         self.tmp_pt = None
         self.HprimeL = None
         self.HprimeR = None
+        self.HprimeLRst = None
         self.a = None
         self.b = None
 
@@ -1577,40 +1529,92 @@ class BulletProofBuilder:
         # blinds[1] new blinds
         self.blinds = [[], []]
 
+    def _save_xbuff(self, idx, val):
+        self.Xbuffs[idx] = val.sdump()
+
+    def _load_xbuff(self, idx):
+        if not self.Xbuffs[idx]:
+            return None
+        kv = KeyV(0, no_init=True)
+        kv.sload(self.Xbuffs[idx])
+        self.Xbuffs[idx] = None
+        self.gc(1)
+        return kv
+
+    def dump_xbuffs(self):
+        if self.round > 0 and self.Gprime:
+            self._save_xbuff(0, self.Gprime)
+            self.Gprime = None
+        if self.round > 0 and self.Hprime:
+            self._save_xbuff(1, self.Hprime)
+            self.Hprime = None
+        if self.aprime:
+            self._save_xbuff(2, self.aprime)
+            self.aprime = None
+        if self.bprime:
+            self._save_xbuff(3, self.bprime)
+            self.bprime = None
+        if self.L:
+            self._save_xbuff(4, self.L)
+            self.L = None
+        if self.R:
+            self._save_xbuff(5, self.R)
+            self.R = None
+        if self.V:
+            self._save_xbuff(6, self.V)
+            self.V = None
+
+    def load_xbuffs(self):
+        if self.round > 0:
+            self.Gprime = self._load_xbuff(0)
+            self.Hprime = self._load_xbuff(1)
+        self.aprime = self._load_xbuff(2)
+        self.bprime = self._load_xbuff(3)
+        self.L = self._load_xbuff(4)
+        self.R = self._load_xbuff(5)
+        self.V = self._load_xbuff(6)
+
     def dump_state(self, state=None):
-        ctr_i = SizeCounter(False, False, False)
-        ctr_r = SizeCounter(True, True, True)
+        state = state if state is not None else [None] * len(BulletProofBuilder.STATE_VARS)
+        if len(state) != len(BulletProofBuilder.STATE_VARS):
+            state += [None] * (len(BulletProofBuilder.STATE_VARS) - len(state))
 
-        for x in dir(self):
-            if x.startswith('__'):
-                continue
+        # Serialize KeyV to buffers
+        self.dump_xbuffs()
+        self.gc(1)
 
+        if BulletProofBuilder.COUNT_STATE:
+            ctr_i = SizeCounter(False, False, False)
+            ctr_r = SizeCounter(True, True, True)
+
+        for ix, x in enumerate(BulletProofBuilder.STATE_VARS):
             v = getattr(self, x, None)
-            if v is None:
-                continue
-            if x in ('Gprime', 'Hprime', 'aprime', 'bprime', 'gc_fnc'):
-                continue
-            tp = type(v)
-            if tp == type(self.dump_state):
-                continue
-            if tp == type(_cross_inner_product):
-                continue
+            setattr(self, x, None)
+            state[ix] = v
+            if BulletProofBuilder.COUNT_STATE:
+                ctr_i.comp_size(v, x)
+                ctr_r.comp_size(v, x)
+        self.gc(1)
 
-            ctr_i.comp_size(v, x)
-            ctr_r.comp_size(v, x)
+        if BulletProofBuilder.COUNT_STATE:
+            ctr_r.acc += sizeof(state)
+            print('!!!!!!!!!!!!!!!!Dump finished: ', ctr_i.acc, ': r: ', ctr_r.acc)
+            ctr_i.report()
+            ctr_r.report()
+            self.gc(1)
+        return state
 
-            if state and hasattr(state, x):
-                print(x, type(v))
-                setattr(state, x, v)
-                setattr(self, x, None)
+    def load_state(self, state):
+        for ix, x in enumerate(BulletProofBuilder.STATE_VARS):
+            if state[ix] is None:
+                continue
+            setattr(self, x, state[ix])
+            state[ix] = None
+        self.gc(1)
 
-        print('!!!!!!!!!!!!!!!!Dump finished: ', ctr_i.acc, ': r: ', ctr_r.acc)
-        ctr_i.report()
-        ctr_r.report()
-        # print(comp_size(bytearray(32*32), real=True))
-        # print(comp_size(KeyV(32), real=True))
-        # print(comp_size(self.Xprime, real=True))
-        # print(self.Xprime)
+        # Unserialize KeyV buffers
+        self.load_xbuffs()
+        self.gc(1)
 
     @property
     def Gprime(self):
@@ -1649,8 +1653,6 @@ class BulletProofBuilder:
             self.gc_trace(*args)
         if self.gc_fnc:
             self.gc_fnc()
-
-
 
     def aX_vcts(self, sv, MN):
         aL = KeyVEval(MN, lambda i, d: _e_xL(sv, i, d, True))
@@ -1733,29 +1735,35 @@ class BulletProofBuilder:
     def prove(self, sv, gamma):
         return self.prove_batch([sv], [gamma])
 
-    def prove_setup(self, sv, gamma):
-        utils.ensure(len(sv) == len(gamma), "|sv| != |gamma|")
-        utils.ensure(len(sv) > 0, "sv empty")
-
-        self.proof_sec = "\x00"*32  #crypto.random_bytes(64)
-        self._det_mask_init()
-        gc.collect()
-        sv = [crypto.encodeint(x) for x in sv]
-        gamma = [crypto.encodeint(x) for x in gamma]
-
+    def _comp_m(self, ln):
         M, logM = 1, 0
-        while M <= _BP_M and M < len(sv):
+        while M <= _BP_M and M < ln:
             logM += 1
             M = 1 << logM
         MN = M * _BP_N
+        return M, logM, MN
 
+    def _comp_V(self, sv, gamma):
         V = _ensure_dst_keyvect(None, len(sv))
         for i in range(len(sv)):
             _add_keys2(_tmp_bf_0, gamma[i], sv[i], _XMR_H)
             _scalarmult_key(_tmp_bf_0, _tmp_bf_0, _INV_EIGHT)
             V.read(i, _tmp_bf_0)
+        return V
 
-        aL, aR = self.aX_vcts(sv, MN)
+    def prove_setup(self, sv, gamma):
+        utils.ensure(len(sv) == len(gamma), "|sv| != |gamma|")
+        utils.ensure(len(sv) > 0, "sv empty")
+
+        self.proof_sec = b"\x00"*32  #crypto.random_bytes(64)
+        self._det_mask_init()
+        gc.collect()
+        self.sv = [crypto.encodeint(x) for x in sv]
+        gamma = [crypto.encodeint(x) for x in gamma]
+
+        M, logM, MN = self._comp_m(len(self.sv))
+        V = self._comp_V(self.sv, gamma)
+        aL, aR = self.aX_vcts(self.sv, MN)
         return M, logM, aL, aR, V, gamma
 
     def prove_batch(self, sv, gamma):
@@ -1833,6 +1841,31 @@ class BulletProofBuilder:
             ),
         )
 
+    def _comp_l0l1r0r1(self, MN, aL, aR, sL, sR, y, z, zc, l0l1r0r1st=None):
+        # Polynomial construction by coefficients
+        # l0 = aL - z           r0   = ((aR + z) . ypow) + zt
+        # l1 = sL               r1   =   sR      . ypow
+        l0 = KeyVEval(MN, lambda i, d: _sc_sub(d, aL.to(i), None, None, zc))
+        l1 = sL
+        self.gc(13)
+
+        # This computes the ugly sum/concatenation from PAPER LINE 65
+        # r0_i = ((a_{Ri} + z) y^{i}) + zt_i
+        # r1_i = s_{Ri} y^{i}
+        r0 = KeyR0(MN, _BP_N, aR, y, z)
+        ypow = KeyVPowers(MN, y, raw=True)
+        r1 = KeyVEval(MN, lambda i, d: _sc_mul(d, sR.to(i), None, None, ypow[i]))
+
+        if l0l1r0r1st:
+            sL.sload(l0l1r0r1st[0])
+            sR.sload(l0l1r0r1st[1])
+            r0.sload(l0l1r0r1st[2])
+            ypow.sload(l0l1r0r1st[3])
+        return l0, l1, r0, r1, ypow
+
+    def _sdump_l0l1r0r1(self, l1, sR, r0, ypow):
+        return l1.sdump(), sR.sdump(), r0.sdump(), ypow.sdump()
+
     def _prove_phase1(self, N, M, logMN, V, gamma, aL, aR, hash_cache, Gprec, Hprec):
         MN = M * N
 
@@ -1868,23 +1901,8 @@ class BulletProofBuilder:
             return (0,)
 
         # Polynomial construction by coefficients
-        # l0 = aL - z           r0   = ((aR + z) . ypow) + zt
-        # l1 = sL               r1   =   sR      . ypow
-        l0 = KeyVEval(
-            MN, lambda i, d: _sc_sub(d, aL.to(i), None, None, zc)  # noqa: F821
-        )
-        l1 = sL
-        self.gc(13)
-
-        # This computes the ugly sum/concatenation from PAPER LINE 65
-        # r0_i = ((a_{Ri} + z) y^{i}) + zt_i
-        # r1_i = s_{Ri} y^{i}
-        r0 = KeyR0(MN, N, aR, y, z)
-        ypow = KeyVPowers(MN, y, raw=True)
-        r1 = KeyVEval(
-            MN, lambda i, d: _sc_mul(d, sR.to(i), None, ypow[i])  # noqa: F821
-        )
-        del aR
+        l0, l1, r0, r1, _ = self._comp_l0l1r0r1(MN, aL, aR, sL, sR, y, z, zc)
+        del (aL, aR, sL, sR)
         self.gc(14)
 
         # Evaluate per index
@@ -1952,7 +1970,7 @@ class BulletProofBuilder:
             _sc_muladd(ts, _tmp_bf_0, _tmp_bf_1, None, c_raw=ts, raw=True)
 
         self.t = crypto.encodeint(ts)
-        del (l0, l1, sL, sR, r0, r1, ypow, ts)
+        del (l0, l1, r0, r1, ts)
         self.gc(17)
 
         return self.phase1_post()
@@ -1968,10 +1986,19 @@ class BulletProofBuilder:
         r = KeyV(self.batching)
         self.gc(4)
 
+        # Reconstruct l0, l1, r0, r1 from the saved state
+        aL, aR = self.aX_vcts(self.sv, self.MN)
+        sL, sR = self.sL_vct(self.MN), self.sR_vct(self.MN)
+        l0, l1, r0, r1, ypow = self._comp_l0l1r0r1(self.MN, aL, aR, sL, sR,
+                                                   self.y, self.z, self.zc, self.l0l1r0r1st)
+        self.l0l1r0r1st = None
+        del (aL, aR, sL)
+        self.gc(14)
+
         for i in range(self.offpos, self.offpos + self.batching):
             bloff = int(i >= (self.MN >> 1))
-            _sc_muladd(_tmp_bf_0, self.x, self.l1.to(i), self.l0.to(i))
-            _sc_muladd(_tmp_bf_1, self.x, self.r1.to(i), self.r0.to(i))
+            _sc_muladd(_tmp_bf_0, self.x, l1.to(i), l0.to(i))
+            _sc_muladd(_tmp_bf_1, self.x, r1.to(i), r0.to(i))
             _sc_muladd(self.ts, _tmp_bf_0, _tmp_bf_1, None, c_raw=self.ts, raw=True)
             _sc_mul(_tmp_bf_0, _tmp_bf_0, None, b_raw=self.blinds[0][4+bloff])  # blinding a
             _sc_mul(_tmp_bf_1, _tmp_bf_1, None, b_raw=self.blinds[0][6+bloff])  # blinding b
@@ -1982,12 +2009,18 @@ class BulletProofBuilder:
         self.offpos += self.batching
         if self.offpos >= self.MN:
             self.t = crypto.encodeint(self.ts)
-            del(self.ts)
+            del(self.ts, self.l0l1r0r1st)
             print('Moving to next state')
             self.offstate = 1
             self.offpos = 0
+
+        else:
+            self.l0l1r0r1st = self._sdump_l0l1r0r1(l1, sR, r0, ypow)
+
+        ld, rd = l.d, r.d
+        del(l0, l1, r0, r1, ypow, sR, l, r)
         self.gc(5)
-        return l.d, r.d
+        return ld, rd
 
     def phase1_post(self):
         """
@@ -2008,6 +2041,8 @@ class BulletProofBuilder:
         for j in range(1, len(self.V) + 1):
             _sc_muladd(self.taux, None, self.gamma[j - 1], self.taux, a_raw=zpow)
             crypto.sc_mul_into(zpow, zpow, self.zc)
+        self.sv = None
+        self.gamma = None
         del (self.zc, zpow)
         self.gc(18)
 
@@ -2066,7 +2101,7 @@ class BulletProofBuilder:
         state 24, 25 = folding a, b; maps to state 5, 6
         """
         print('phase2_loop0_clcr, state: %s, off: %s, round: %s, nprime: %s' % (self.offstate, self.offpos, self.round, self.nprime))
-        if self.Gprime is None:
+        if self.round == 0 and (self.Gprime is None or self.Hprime is None or self.HprimeL is None):
             self._phase2_loop_body_r0init()
 
         if self.cL is None or (self.offstate == 20 and self.offpos == 0):
@@ -2180,8 +2215,11 @@ class BulletProofBuilder:
             print('Moved to state ', self.offstate)
 
         self.gc(15)
+        if self.round == 0:
+            self._phase2_loop_body_r0dump()
+
         # In the round0 we do Trezor folding anyway due to G, H being only on the Trezor
-        # Optimization: aprime, bprime could be computed on the Host (not implemented yet)
+        # Optimization: aprime, bprime could be computed on the Host
         if self.offstate >= 22:
             print('Move to state 3 (folding)')
             self.offstate = 3
@@ -2201,7 +2239,7 @@ class BulletProofBuilder:
             self.winv = _ensure_dst_key()
             self.w_round = _ensure_dst_key()
 
-        if self.Gprime is None:
+        if self.Gprime is None and self.round == 0:
             self._phase2_loop_body_r0init()
 
         if self.round <= 1 and hasattr(self, 'l0'):
@@ -2273,6 +2311,10 @@ class BulletProofBuilder:
         self.offstate, self.offpos = 3, 0
         self.gc(14)
 
+        # Backup state if needed
+        if self.round == 0:
+            self._phase2_loop_body_r0dump()
+
         # If the first round of the ofdot, we cannot do in
         if self.off_method >= 1 and self.round == 0:
             print('Fold now')
@@ -2294,6 +2336,12 @@ class BulletProofBuilder:
             self.nprime >>= 1
             self.round += 1
             self._swap_blinds()
+            if self.round == 1:
+                self._phase2_loop_body_r0del()
+            self.Gprime = None
+            self.Hprime = None
+            self.aprime = None
+            self.bprime = None
             return tconst
 
     def _compute_folding_consts(self):
@@ -2334,6 +2382,9 @@ class BulletProofBuilder:
         lo, hi = None, None
         tgt = min(self.batching, self.nprime)
         if self.round == 0 and self.offstate in (3, 4):
+            if self.Gprime is None or self.HprimeL is None:
+                self._phase2_loop_body_r0init()
+
             if self.offpos == 0 and self.offstate == 4:
                 self.yinvpowR.reset()
                 self.yinvpowR.rewind(self.nprime)
@@ -2432,10 +2483,7 @@ class BulletProofBuilder:
             self.round += 1
 
             if self.round == 1:
-                del (self.Gprec2, self.Hprec2, self.yinvpowL, self.yinvpowR, self.HprimeL, self.HprimeR, self.tmp_pt)
-
-            if self.round == 1 and hasattr(self, 'l0'):
-                del (self.l0, self.l1, self.r0, self.r1)
+                self._phase2_loop_body_r0del()
 
             self.gc(16)
 
@@ -2452,6 +2500,9 @@ class BulletProofBuilder:
 
             # Rotate blindings
             self._swap_blinds()
+
+        elif self.round == 0 and self.offstate in (3, 4):
+            self._phase2_loop_body_r0dump()
 
         if self.nprime <= 0:
             self.offstate = 12  # final, _phase2_final
@@ -2478,9 +2529,12 @@ class BulletProofBuilder:
 
     def _phase2_loop_body_r0init(self):
         """
-        Initializes Gprime, HPrime for the round0
+        Initializes Gprime, HPrime for the round0, state in self.HprimeLRst
         """
         print('_phase2_loop_body_r0init, state: %s, off: %s' % (self.offstate, self.offpos))
+        if self.Gprec is None or self.Hprec2 is None:
+            self.Gprec2 = self._gprec_aux(self.MN)
+            self.Hprec2 = self._hprec_aux(self.MN)
 
         self.yinvpowL = KeyVPowers(self.MN, _invert(_tmp_bf_0, self.y), raw=True)
         self.yinvpowR = KeyVPowers(self.MN, _tmp_bf_0, raw=True)
@@ -2495,7 +2549,29 @@ class BulletProofBuilder:
             self.MN, lambda i, d: _scalarmult_key(d, self.Hprec2.to(i), None, self.yinvpowR[i], self.tmp_pt)
         )
         self.Hprime = self.HprimeL
+
+        if self.HprimeLRst:
+            self.yinvpowL.sload(self.HprimeLRst[0])
+            self.yinvpowR.sload(self.HprimeLRst[1])
+            self.HprimeLRst = None
+
         self.gc(34)
+
+    def _phase2_loop_body_r0del(self):
+        del (self.Gprec2, self.Hprec2, self.yinvpowL, self.yinvpowR, self.HprimeL, self.HprimeR, self.tmp_pt, self.HprimeLRst)
+
+    def _phase2_loop_body_r0clear(self):
+        self.yinvpowL = None
+        self.yinvpowR = None
+        self.HprimeL = None
+        self.HprimeR = None
+        self.tmp_pt = None
+        self.Gprec2 = None
+        self.Hprec2 = None
+
+    def _phase2_loop_body_r0dump(self):
+        self.HprimeLRst = self.yinvpowL.sdump(), self.yinvpowR.sdump()
+        self._phase2_loop_body_r0clear()
 
     def _phase2_loop_body(self):
         """
