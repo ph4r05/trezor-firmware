@@ -93,13 +93,20 @@ if not utils.BITCOIN_ONLY:
         return cL, cR, LcA, LcB, RcA, RcB
 
     def dechunk_res(buffers, exp_res=1):
-        if not buffers or not isinstance(buffers, list):
+        if not buffers or not isinstance(buffers, (list, tuple)):
             return buffers
 
         ln = len(buffers)
         cres = [bytearray() for _ in range(exp_res)]
-        for i in range(ln):
-            cres[i//(ln//exp_res)] += buffers[i]
+        for c in range(exp_res):
+            cbuff = buffers[c] if exp_res > 1 else buffers
+            if not isinstance(cbuff, (list, tuple)):
+                cres[c] += cbuff
+                continue
+
+            for i in range(len(cbuff)):
+                cres[c] += cbuff[i]
+
         return cres if exp_res > 1 else cres[0]
 
     def vect_clone(dst, src):
@@ -533,15 +540,15 @@ class TestMoneroBulletproof(unittest.TestCase):
         bprime = r
         print('Batching: %s, MN: %s, chunks: %s' % (batching, MN, MN // batching))
 
-        l0, r0 = bpi.prove_batch_off(sv, gamma)
-        l += l0
-        r += r0
+        rr = dechunk_res(bpi.prove_batch_off(sv, gamma), 2)
+        l += rr[0]
+        r += rr[1]
 
         for i in range(1, MN // batching):
             print('.. l, r: %s' % i)
-            l0, r0 = bpi.prove_batch_off_step(None)
-            l += l0
-            r += r0
+            rr = dechunk_res(bpi.prove_batch_off_step(None), 2)
+            l += rr[0]
+            r += rr[1]
 
         print('l, r finished')
         rrcons = bpi.prove_batch_off_step(None)
@@ -714,6 +721,10 @@ class TestMoneroBulletproof(unittest.TestCase):
 
     def test_prove_batch16_off2(self):
         self.prove_batch_off(16)
+        self.prove_batch_off(16, 1)
+
+    def test_prove_batch16_off2_64b(self):
+        self.prove_batch_off(16, 2, off2_thresh=64, batching=64)
 
     def test_prove_batch8_off2(self):
         self.prove_batch_off(8)
