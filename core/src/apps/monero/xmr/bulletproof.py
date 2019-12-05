@@ -56,10 +56,16 @@ _tmp_sc_3 = crypto.new_scalar()
 _tmp_sc_4 = crypto.new_scalar()
 
 
-def eprint(*args, **kwargs):
+def _eprint(*args, **kwargs):
     if not _PRINT_INT:
         return
     print(*args, **kwargs)
+
+
+def _ehexlify(x):
+    if not _PRINT_INT:
+        return
+    ubinascii.hexlify(x)
 
 
 def _ensure_dst_key(dst=None):
@@ -631,12 +637,12 @@ class KeyV(KeyVBase):
 
     def sdump(self):
         utils.ensure(self.size <= const(1152921504606846976), "Size too big")
-        return self.d, (self.size | self.chunked << 60)  # packing saves 8B for boolean (self.chunked)
+        return self.d, (self.size | (bool(self.chunked) << 60))  # packing saves 8B for boolean (self.chunked)
 
     def sload(self, st):
         self.d, s = st
         self.size = s &(~(1<<60))
-        self.chunked = s & (1<<60)
+        self.chunked = (s & (1<<60)) > 0
         self._set_mv()
 
     def getsize(self, real=False, name="", sslot_sizes=slot_sizes):
@@ -1419,7 +1425,7 @@ def _e_xL(sv, idx, d=None, is_a=True):
 
 
 class BulletProofBuilder:
-    COUNT_STATE = True
+    COUNT_STATE = False
     STATE_VARS = ('use_det_masks', 'proof_sec',
                   'do_blind', 'offload', 'batching', 'off_method', 'nprime_thresh', 'off2_thresh',
                   'MN', 'M', 'logMN', 'sv', 'gamma',
@@ -1438,7 +1444,7 @@ class BulletProofBuilder:
         # BP_HI_PRE = get_exponent(Hi[i], _XMR_H, i * 2)
         self.Hprec = KeyV(buffer=crypto.tcry.BP_HI_PRE, const=True)
         # BP_TWO_N = vector_powers(_TWO, _BP_N);
-        self.twoN = KeyV(buffer=crypto.tcry.BP_TWO_N, const=True)
+        self.twoN = None
         self.fnc_det_mask = None
 
         self.tmp_sc_1 = crypto.new_scalar()
@@ -1470,8 +1476,14 @@ class BulletProofBuilder:
         self.MN = 1
         self.M = 1
         self.logMN = 1
+        self.Gprec2 = None
+        self.Hprec2 = None
+
+        # Values, blinding masks
         self.sv = None
         self.gamma = None
+
+        # Bulletproof result / intermediate state
         self.V = None
         self.A = None
         self.S = None
@@ -1490,19 +1502,21 @@ class BulletProofBuilder:
         self.zc = None
         self.l = None
         self.r = None
-        self.l0l1r0r1st = None
-        self.hash_cache = None
-        self.nprime = None
-        self.round = 0
         self.rho = None
         self.alpha = None
+        self.l0l1r0r1st = None
+        self.hash_cache = None
         self.Xbuffs = [None, None, None, None, None, None, None]  # Gprime, Hprime, aprime, bprime, L, R, V
-        self.Gprec2 = None
-        self.Hprec2 = None
-        self.Xprime = [None, None, None, None]
+        self.Xprime = [None, None, None, None]  # Gprime, Hprime, aprime, bprime KeyVs
 
         self.L = None
         self.R = None
+        self.a = None
+        self.b = None
+
+        # Folding (w), incremental Lc, Rc computation
+        self.nprime = None
+        self.round = 0
         self.w_round = None
         self.winv = None
         self.cL = None
@@ -1512,15 +1526,16 @@ class BulletProofBuilder:
         self.RcA = None
         self.RcB = None
         self.tmp_k_1 = None
+
+        # Folding in round 0
         self.yinvpowL = None
         self.yinvpowR = None
         self.tmp_pt = None
         self.HprimeL = None
         self.HprimeR = None
         self.HprimeLRst = None
-        self.a = None
-        self.b = None
 
+        # Offloading state management
         self.offstate = 0
         self.offpos = 0
 
@@ -1685,6 +1700,9 @@ class BulletProofBuilder:
 
     def _two_aux(self, size):
         # Simple recursive exponentiation from precomputed results
+        if self.twoN is None:
+            self.twoN = KeyV(buffer=crypto.tcry.BP_TWO_N, const=True)
+
         lx = len(self.twoN)
 
         def pow_two(i, d=None):
@@ -1796,9 +1814,9 @@ class BulletProofBuilder:
 
     def prove_batch_off_step(self, buffers=None):
         if self.offstate == 0:
-            return self.phase1_lr()
+            return self._phase1_lr()
         elif self.offstate == 1:
-            return self.phase1_post()
+            return self._phase1_post()
         elif self.offstate == 2:
             return self._phase2_loop_offdot(buffers)
         elif self.offstate in [3, 4, 5, 6]:
@@ -1867,42 +1885,48 @@ class BulletProofBuilder:
         return l1.sdump(), sR.sdump(), r0.sdump(), ypow.sdump()
 
     def _prove_phase1(self, N, M, logMN, V, gamma, aL, aR, hash_cache, Gprec, Hprec):
-        MN = M * N
+        self.MN = M * N
+        self.M = M
+        self.logMN = logMN
+        self.V = V
+        self.gamma = gamma
+        self.hash_cache = hash_cache
+        self.Gprec2, self.Hprec2 = Gprec, Hprec
 
         # PAPER LINES 38-39, compute A = 8^{-1} ( \alpha G + \sum_{i=0}^{MN-1} a_{L,i} \Gi_i + a_{R,i} \Hi_i)
-        alpha = _sc_gen()
-        A = _ensure_dst_key()
-        _vector_exponent_custom(Gprec, Hprec, aL, aR, A)
-        _add_keys(A, A, _scalarmult_base(_tmp_bf_1, alpha))
-        _scalarmult_key(A, A, _INV_EIGHT)
+        self.alpha = _sc_gen()
+        self.A = _ensure_dst_key()
+        _vector_exponent_custom(Gprec, Hprec, aL, aR, self.A)
+        _add_keys(self.A, self.A, _scalarmult_base(_tmp_bf_1, self.alpha))
+        _scalarmult_key(self.A, self.A, _INV_EIGHT)
         self.gc(11)
 
         # PAPER LINES 40-42, compute S =  8^{-1} ( \rho G + \sum_{i=0}^{MN-1} s_{L,i} \Gi_i + s_{R,i} \Hi_i)
-        sL = self.sL_vct(MN)
-        sR = self.sR_vct(MN)
-        rho = _sc_gen()
-        S = _ensure_dst_key()
-        _vector_exponent_custom(Gprec, Hprec, sL, sR, S)
-        _add_keys(S, S, _scalarmult_base(_tmp_bf_1, rho))
-        _scalarmult_key(S, S, _INV_EIGHT)
+        sL = self.sL_vct(self.MN)
+        sR = self.sR_vct(self.MN)
+        self.rho = _sc_gen()
+        self.S = _ensure_dst_key()
+        _vector_exponent_custom(Gprec, Hprec, sL, sR, self.S)
+        _add_keys(self.S, self.S, _scalarmult_base(_tmp_bf_1, self.rho))
+        _scalarmult_key(self.S, self.S, _INV_EIGHT)
         self.gc(12)
 
         # PAPER LINES 43-45
-        y = _ensure_dst_key()
-        _hash_cache_mash(y, hash_cache, A, S)
-        if y == _ZERO:
+        self.y = _ensure_dst_key()
+        _hash_cache_mash(self.y, self.hash_cache, self.A, self.S)
+        if self.y == _ZERO:
             return (0,)
 
-        z = _ensure_dst_key()
-        _hash_to_scalar(hash_cache, y)
-        _copy_key(z, hash_cache)
-        zc = crypto.decodeint_into_noreduce(None, z)
-        if z == _ZERO:
+        self.z = _ensure_dst_key()
+        _hash_to_scalar(self.hash_cache, self.y)
+        _copy_key(self.z, self.hash_cache)
+        self.zc = crypto.decodeint_into_noreduce(None, self.z)
+        if self.z == _ZERO:
             return (0,)
 
         # Polynomial construction by coefficients
-        l0, l1, r0, r1, _ = self._comp_l0l1r0r1(MN, aL, aR, sL, sR, y, z, zc)
-        del (aL, aR, sL, sR)
+        l0, l1, r0, r1, ypow = self._comp_l0l1r0r1(self.MN, aL, aR, sL, sR, self.y, self.z, self.zc)
+        del (aL, aR, sL, sR, ypow)
         self.gc(14)
 
         # Evaluate per index
@@ -1914,57 +1938,51 @@ class BulletProofBuilder:
         # PAPER LINES 47-48, Compute: T1, T2
         # T1 = 8^{-1} (\tau_1G + t_1H )
         # T2 = 8^{-1} (\tau_2G + t_2H )
-        tau1, tau2 = _sc_gen(), _sc_gen()
-        T1, T2 = _ensure_dst_key(), _ensure_dst_key()
+        self.tau1, self.tau2 = _sc_gen(), _sc_gen()
+        self.T1, self.T2 = _ensure_dst_key(), _ensure_dst_key()
 
-        _add_keys2(T1, tau1, t1, _XMR_H)
-        _scalarmult_key(T1, T1, _INV_EIGHT)
+        _add_keys2(self.T1, self.tau1, t1, _XMR_H)
+        _scalarmult_key(self.T1, self.T1, _INV_EIGHT)
 
-        _add_keys2(T2, tau2, t2, _XMR_H)
-        _scalarmult_key(T2, T2, _INV_EIGHT)
+        _add_keys2(self.T2, self.tau2, t2, _XMR_H)
+        _scalarmult_key(self.T2, self.T2, _INV_EIGHT)
         del (t1, t2)
         self.gc(16)
 
         # PAPER LINES 49-51, compute x
-        x = _ensure_dst_key()
-        _hash_cache_mash(x, hash_cache, z, T1, T2)
-        if x == _ZERO:
+        self.x = _ensure_dst_key()
+        _hash_cache_mash(self.x, self.hash_cache, self.z, self.T1, self.T2)
+        if self.x == _ZERO:
             return (0,)
 
-        # Offloading patch - use the local state
-        self.M, self.MN, self.logMN = M, MN, logMN
-        self.V, self.A, self.S, self.T1, self.T2 = V, A, S, T1, T2
-        self.x, self.z, self.y, self.hash_cache = x, z, y, hash_cache
-        self.tau1, self.tau2, self.gamma, self.zc = tau1, tau2, gamma, zc
-        self.rho, self.alpha = rho, alpha
-        self.Gprec2, self.Hprec2 = Gprec, Hprec
+        if not self.offload:
+            return self._phase1_fulllr(l0, l1, r0, r1)
 
-        if self.offload:
-            self.l0, self.l1, self.r0, self.r1 = l0, l1, r0, r1
-            self.ts = crypto.new_scalar()
-            self._prove_new_blinds()
-            self.offstate = 0
-            self.offpos = 0
-            return self.phase1_lr()
+        # Offloading code
+        del(l0, l1, r0, r1)
+        self.gc(17)
 
-            # t = crypto.encodeint(ts)
-            # del (l0, l1, sL, sR, r0, r1, ypow, ts)
+        self.ts = crypto.new_scalar()
+        self._prove_new_blinds()
+        self.offstate = 0
+        self.offpos = 0
+        return self._phase1_lr()
 
-        # NOT OFFLOADED part
+    def _phase1_fulllr(self, l0, l1, r0, r1):
         # Second pass, compute l, r
         # Offloaded version does this incrementally and produces l, r outs in chunks
         # Message offloaded sends blinded vectors with random constants.
         #  - $l_i = l_{0,i} + xl_{1,i}
         #  - $r_i = r_{0,i} + xr_{1,i}
         #  - $t   = l . r$
-        self.l = _ensure_dst_keyvect(None, MN)
-        self.r = _ensure_dst_keyvect(None, MN)
+        self.l = _ensure_dst_keyvect(None, self.MN)
+        self.r = _ensure_dst_keyvect(None, self.MN)
         ts = crypto.new_scalar()
-        for i in range(MN):
-            _sc_muladd(_tmp_bf_0, x, l1.to(i), l0.to(i))
+        for i in range(self.MN):
+            _sc_muladd(_tmp_bf_0, self.x, l1.to(i), l0.to(i))
             self.l.read(i, _tmp_bf_0)
 
-            _sc_muladd(_tmp_bf_1, x, r1.to(i), r0.to(i))
+            _sc_muladd(_tmp_bf_1, self.x, r1.to(i), r0.to(i))
             self.r.read(i, _tmp_bf_1)
 
             _sc_muladd(ts, _tmp_bf_0, _tmp_bf_1, None, c_raw=ts, raw=True)
@@ -1973,9 +1991,9 @@ class BulletProofBuilder:
         del (l0, l1, r0, r1, ts)
         self.gc(17)
 
-        return self.phase1_post()
+        return self._phase1_post()
 
-    def phase1_lr(self):
+    def _phase1_lr(self):
         """
         Computes l, r vectors per chunks
         """
@@ -2004,6 +2022,8 @@ class BulletProofBuilder:
             _sc_mul(_tmp_bf_1, _tmp_bf_1, None, b_raw=self.blinds[0][6+bloff])  # blinding b
             l.read(i - self.offpos, _tmp_bf_0)
             r.read(i - self.offpos, _tmp_bf_1)
+        del(l0, r1)
+        self.gc(5)
 
         self.offstate = 0
         self.offpos += self.batching
@@ -2018,11 +2038,11 @@ class BulletProofBuilder:
             self.l0l1r0r1st = self._sdump_l0l1r0r1(l1, sR, r0, ypow)
 
         ld, rd = l.d, r.d
-        del(l0, l1, r0, r1, ypow, sR, l, r)
-        self.gc(5)
+        del(l1, r0, ypow, sR, l, r)
+        self.gc(6)
         return ld, rd
 
-    def phase1_post(self):
+    def _phase1_post(self):
         """
         Part after l, r, t are computed.
         Offstate = 1
@@ -2067,9 +2087,9 @@ class BulletProofBuilder:
         self.gc(20)
 
         if self.l is None:
-            self.l = []
-            self.r = []
-        # return self.A, self.S, self.T1, self.T2, self.taux, self.mu, self.t, self.l, self.r, self.y, self.x_ip, self.hash_cache
+            self.l = tuple()
+            self.r = self.l
+
         return self.y,
 
     def _new_blinds(self, ix):
@@ -2172,24 +2192,24 @@ class BulletProofBuilder:
 
             if self.offstate == 20:  # Finish Lc
                 # print('x_ip: ', ubinascii.hexlify(self.x_ip))
-                eprint('r: %s, cL ' % self.round, ubinascii.hexlify(self.cL))
+                _eprint('r: %s, cL ' % self.round, ubinascii.hexlify(self.cL))
                 _add_keys(_tmp_bf_0, self.LcA, self.LcB)
                 _sc_mul(tmp, self.cL, self.x_ip)
                 _add_keys(_tmp_bf_0, _tmp_bf_0, _scalarmultH(self.tmp_k_1, tmp))
                 _scalarmult_key(_tmp_bf_0, _tmp_bf_0, _INV_EIGHT)
                 self.L.read(self.round, _tmp_bf_0)
-                eprint('r: %s, Lc ' % self.round, ubinascii.hexlify(self.L.to(self.round)))
+                _eprint('r: %s, Lc ' % self.round, ubinascii.hexlify(self.L.to(self.round)))
                 self.gc(12)
 
             elif self.offstate == 21:  # finish Rc, w
                 # print('x_ip: ', ubinascii.hexlify(self.x_ip))
-                eprint('r: %s, cR ' % self.round, ubinascii.hexlify(self.cR))
+                _eprint('r: %s, cR ' % self.round, ubinascii.hexlify(self.cR))
                 _add_keys(_tmp_bf_0, self.RcA, self.RcB)
                 _sc_mul(tmp, self.cR, self.x_ip)
                 _add_keys(_tmp_bf_0, _tmp_bf_0, _scalarmultH(self.tmp_k_1, tmp))
                 _scalarmult_key(_tmp_bf_0, _tmp_bf_0, _INV_EIGHT)
                 self.R.read(self.round, _tmp_bf_0)
-                eprint('r: %s, Rc ' % self.round, ubinascii.hexlify(self.R.to(self.round)))
+                _eprint('r: %s, Rc ' % self.round, ubinascii.hexlify(self.R.to(self.round)))
                 self.gc(13)
 
                 # PAPER LINES 21-22
@@ -2200,8 +2220,8 @@ class BulletProofBuilder:
                 # PAPER LINES 24-25, fold {G~, H~}
                 _invert(self.winv, self.w_round)
                 self.gc(26)
-                eprint('r: %s, w0 ' % self.round, ubinascii.hexlify(self.w_round))
-                eprint('r: %s, wi ' % self.round, ubinascii.hexlify(self.winv))
+                _eprint('r: %s, w0 ' % self.round, ubinascii.hexlify(self.w_round))
+                _eprint('r: %s, wi ' % self.round, ubinascii.hexlify(self.winv))
 
                 # New blinding factors to use for newly folded vectors
                 self._prove_new_blindsN()
@@ -2242,9 +2262,6 @@ class BulletProofBuilder:
         if self.Gprime is None and self.round == 0:
             self._phase2_loop_body_r0init()
 
-        if self.round <= 1 and hasattr(self, 'l0'):
-            del (self.l0, self.l1, self.r0, self.r1)
-
         self.gc(2)
         tmp = _ensure_dst_key()
         self.tmp_k_1 = _ensure_dst_key()
@@ -2264,8 +2281,8 @@ class BulletProofBuilder:
         cR = _sc_mul(cR, cR, ibls[6])  # unblind b0
         self.gc(10)
 
-        eprint('r: %s, cL ' % self.round, ubinascii.hexlify(cL))
-        eprint('r: %s, cR ' % self.round, ubinascii.hexlify(cR))
+        _eprint('r:', self.round, 'cL', _ehexlify(cL))
+        _eprint('r:', self.round, 'cR', _ehexlify(cR))
 
         # products from round 0 are not blinded as Gprime and Hprime are protocol constants
         if self.round == 0:
@@ -2276,23 +2293,27 @@ class BulletProofBuilder:
 
         LcB = _scalarmult_key(LcB, LcB, _sc_mul(None, ibls[7], ibls[2]))  # b1 H0
         RcB = _scalarmult_key(RcB, RcB, _sc_mul(None, ibls[6], ibls[3]))  # b0 H1
+        del(ibls)
+        self.gc(11)
 
         _add_keys(LcA, LcA, LcB)
         _sc_mul(tmp, cL, self.x_ip)
         _add_keys(LcA, LcA, _scalarmultH(self.tmp_k_1, tmp))
         _scalarmult_key(LcA, LcA, _INV_EIGHT)
         self.L.read(self.round, LcA)
-        self.gc(11)
+        del(cL, LcA, LcB)
+        self.gc(12)
 
         _add_keys(RcA, RcA, RcB)
         _sc_mul(tmp, cR, self.x_ip)
         _add_keys(RcA, RcA, _scalarmultH(self.tmp_k_1, tmp))
         _scalarmult_key(RcA, RcA, _INV_EIGHT)
         self.R.read(self.round, RcA)
-        self.gc(12)
+        del(cR, RcA, RcB, tmp)
+        self.gc(13)
 
-        eprint('r: %s, Lc ' % self.round, ubinascii.hexlify(self.L.to(self.round)))
-        eprint('r: %s, Rc ' % self.round, ubinascii.hexlify(self.R.to(self.round)))
+        _eprint('r:', self.round, 'Lc', _ehexlify(self.L.to(self.round)))
+        _eprint('r:', self.round, 'Rc', _ehexlify(self.R.to(self.round)))
 
         # PAPER LINES 21-22
         _hash_cache_mash(self.w_round, self.hash_cache, self.L.to(self.round), self.R.to(self.round))
@@ -2301,15 +2322,15 @@ class BulletProofBuilder:
 
         # PAPER LINES 24-25, fold {G~, H~}
         _invert(self.winv, self.w_round)
-        self.gc(13)
+        self.gc(14)
 
-        eprint('r: %s, w0 ' % self.round, ubinascii.hexlify(self.w_round))
-        eprint('r: %s, w1 ' % self.round, ubinascii.hexlify(self.winv))
+        _eprint('r:', self.round, 'w0', _ehexlify(self.w_round))
+        _eprint('r:', self.round, 'w1', _ehexlify(self.winv))
 
         # New blinding factors to use for newly folded vectors
         self._prove_new_blindsN()
         self.offstate, self.offpos = 3, 0
-        self.gc(14)
+        self.gc(15)
 
         # Backup state if needed
         if self.round == 0:
@@ -2366,6 +2387,7 @@ class BulletProofBuilder:
             crypto.sc_mul_into(_tmp_sc_1, mi, bi)
             crypto.sc_mul_into(_tmp_sc_1, _tmp_sc_1, xi)
             crypto.encodeint_into(tconst[i], _tmp_sc_1)
+        del(blinvs, w0, wi)
         self.gc(22)
         return tconst
 
@@ -2436,6 +2458,7 @@ class BulletProofBuilder:
             crypto.decodeint_into_noreduce(a0, _sc_mul(None, self.w_round, blinv[0]))
             crypto.decodeint_into_noreduce(b0, _sc_mul(None, self.winv, blinv[1]))
 
+        del(blinv)
         self.gc(12)
         if self.offstate in [3, 4]:  # G, H
             for i in range(0, tgt):
@@ -2463,6 +2486,7 @@ class BulletProofBuilder:
                 fld.read(i, _tmp_bf_0)
                 _gc_iter(i)
 
+        del(a0, b0, lo, hi, nbli)
         self.gc(15)
         # State transition
         self.offpos += tgt
@@ -2508,7 +2532,10 @@ class BulletProofBuilder:
             self.offstate = 12  # final, _phase2_final
             print('Terminating')
 
-        return fld.d if not inmem else None
+        if not inmem:
+            fldd = fld.d
+            del(fld)
+            return fldd
 
     def _phase2_final(self):
         from apps.monero.xmr.serialize_messages.tx_rsig_bulletproof import Bulletproof
