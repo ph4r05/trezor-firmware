@@ -1796,7 +1796,7 @@ class BulletProofBuilder:
                 break
         return r[1]
 
-    def prove_batch_off(self, sv, gamma):
+    def prove_batch_off(self, sv, gamma, buffers=None):
         M, logM, aL, aR, V, gamma = self.prove_setup(sv, gamma)
         hash_cache = _ensure_dst_key()
 
@@ -1809,7 +1809,7 @@ class BulletProofBuilder:
         Hprec = self._hprec_aux(MN)
         self.offload = True
         return self._prove_phase1(
-            _BP_N, M, logMN, V, gamma, aL, aR, hash_cache, Gprec, Hprec
+            _BP_N, M, logMN, V, gamma, aL, aR, hash_cache, Gprec, Hprec, buffers
         )
 
     def prove_batch_off_step(self, buffers=None):
@@ -1884,7 +1884,7 @@ class BulletProofBuilder:
     def _sdump_l0l1r0r1(self, l1, sR, r0, ypow):
         return l1.sdump(), sR.sdump(), r0.sdump(), ypow.sdump()
 
-    def _prove_phase1(self, N, M, logMN, V, gamma, aL, aR, hash_cache, Gprec, Hprec):
+    def _prove_phase1(self, N, M, logMN, V, gamma, aL, aR, hash_cache, Gprec, Hprec, buffers=None):
         self.MN = M * N
         self.M = M
         self.logMN = logMN
@@ -1896,7 +1896,10 @@ class BulletProofBuilder:
         # PAPER LINES 38-39, compute A = 8^{-1} ( \alpha G + \sum_{i=0}^{MN-1} a_{L,i} \Gi_i + a_{R,i} \Hi_i)
         self.alpha = _sc_gen()
         self.A = _ensure_dst_key()
-        _vector_exponent_custom(Gprec, Hprec, aL, aR, self.A)
+        if buffers and len(buffers) > 0:  # computed by the host, \sum_{i=0}^{MN-1} a_{L,i} \Gi_i
+            self.A = buffers[0]
+        else:
+            _vector_exponent_custom(Gprec, Hprec, aL, aR, self.A)
         _add_keys(self.A, self.A, _scalarmult_base(_tmp_bf_1, self.alpha))
         _scalarmult_key(self.A, self.A, _INV_EIGHT)
         self.gc(11)
@@ -2100,7 +2103,9 @@ class BulletProofBuilder:
                 if self.do_blind:
                     crypto.random_scalar(self.blinds[ix][i])
                 else:
-                    crypto.sc_init_into(self.blinds[ix][i], 1)
+                    # Neutral blinds for multiplicative / additive masking (only in meth3)
+                    c = 0 if i < 4 and i % 2 == 0 and self.off_method >= 3 and self.round == 0 else 1
+                    crypto.sc_init_into(self.blinds[ix][i], c)
 
     def _swap_blinds(self):
         self.blinds[0], self.blinds[1] = self.blinds[1], self.blinds[0]
@@ -2244,7 +2249,7 @@ class BulletProofBuilder:
             print('Move to state 3 (folding)')
             self.offstate = 3
 
-            if self.off_method == 2:
+            if self.off_method >= 2:
                 print('fold offload')
                 return self._compute_folding_consts()
 
@@ -2343,12 +2348,12 @@ class BulletProofBuilder:
             return tconst
 
         # When offloading also the folding - return blinding constants
-        if self.off_method == 2 and self.nprime <= self.off2_thresh:
+        if self.off_method >= 2 and self.nprime <= self.off2_thresh:
             print('Off2, fold anyway - threshold reached')
             return
 
         # Offload the folding - compute constants
-        if self.off_method == 2:
+        if self.off_method >= 2:
             print('fold offload')
             tconst = self._compute_folding_consts()
 
@@ -2374,40 +2379,97 @@ class BulletProofBuilder:
         # Gp_{LO, i} = m_0 bl0^{-1} w^{-1} G_i   +   m_0 bl1^{-1} w G_{i+h}, i \in [0,        nprime/2]
         # Gp_{HI, i} = m_1 bl0^{-1} w^{-1} G_i   +   m_1 bl1^{-1} w G_{i+h}, i \in [nprime/2, nprime]
         # w constants: G H a b: -1 1 1 -1
+        # blinvs indices: [2 * (i // 4) + (i % 2)]: 0 1 0 1, 2 3 2 3, ...
+        #
+        # Method 3 blinding for LO parts: (m_0 w^{-1} + bl0)
         w0 = crypto.decodeint_into_noreduce(self.w_round)
         wi = crypto.sc_inv_into(None, w0)
-        blinvs = [crypto.sc_inv_into(None, x) for x in self.blinds[0]]
+        blinvs = [crypto.new_scalar(), crypto.new_scalar()]
         tconst = [_ensure_dst_key() for _ in range(4*4)]
         for i in range(16):
+            off_gh = self.round == 0 and self.off_method >= 2 and i < 8
+
+            if i % 4 == 0:
+                if off_gh:  # (Gprime, HPrime) round 0
+                    crypto.sc_init_into(blinvs[1], 1)
+
+                    # Offload initial G, H folding in a special way. Only the low parts. Additive mask.
+                    if self.off_method >= 3:
+                        crypto.sc_copy(blinvs[0], self.blinds[0][2 * (i // 4)])
+                    else:
+                        crypto.sc_init_into(blinvs[0], 1)
+
+                else:
+                    crypto.sc_inv_into(blinvs[0], self.blinds[0][2 * (i // 4)])
+                    crypto.sc_inv_into(blinvs[1], self.blinds[0][2 * (i // 4) + 1])
+
             mi = self.blinds[1][i // 2]
-            bi = blinvs[2 * (i // 4) + (i % 2)]
+            bi = blinvs[i % 2]
             x0, x1 = (wi, w0) if i // 4 in (0, 3) else (w0, wi)
             xi = x0 if i % 2 == 0 else x1
 
-            crypto.sc_mul_into(_tmp_sc_1, mi, bi)
-            crypto.sc_mul_into(_tmp_sc_1, _tmp_sc_1, xi)
+            crypto.sc_mul_into(_tmp_sc_1, mi, xi)
+
+            # meth3 LO special additive mask (later removed by -biG)
+            if off_gh and self.off_method >= 3 and (i % 2) == 0:
+                crypto.sc_add_into(_tmp_sc_1, _tmp_sc_1, bi)
+            elif not off_gh:
+                crypto.sc_mul_into(_tmp_sc_1, _tmp_sc_1, bi)
+
             crypto.encodeint_into(tconst[i], _tmp_sc_1)
+
         del(blinvs, w0, wi)
         self.gc(22)
         return tconst
 
-    def _phase2_loop_fold(self, buffers):
+    def _phase2_loop_r0foldGH(self, buffers, tgt):
         """
-        Computes folding per partes
-        States: 3, 4, 5, 6
+        Initial folding of the Gprime, Hprime
+        Folding constants are special for LO vectors - another random constant is introduced so
+        High parts constants are 1 as the original G, H vectors are unblinded in the round 0.
+
+        E.g., constants for G: (\theta_{G_{LO}} w \pi_{G_{LO}}, \theta_{G_{HI}} w^{-1})
+        Host computes the folding with G, obtains:
+        G_{LO} = (\theta_{G_{LO}} w + \pi_{G_{LO}}) G_i + \theta_{G_{LO}} w^{-1} G_{i+nprime}
+        G_{HI} = (\theta_{G_{HI}} w + \pi_{G_{LO}}) G_i + \theta_{G_{HI}} w^{-1} G_{i+nprime}
+
+        Both (G_{LO}, G_{HI}) contain extraneous \pi_{G_{LO}} G_i, thus we compute it here and host subtracts.
+        Thus here produce just \pi_{G_{LO}} G_i for G_{LO} (and for H respectivelly)
+        off_method = 3
         """
-        print('phase2_loop_fold, state: %s, off: %s, round: %s, nprime: %s, btch: %s' % (self.offstate, self.offpos, self.round, self.nprime, self.batching))
+        print('_phase2_loop_r0foldGH, state: %s, off: %s, round: %s, nprime: %s, btch: %s' % (self.offstate, self.offpos, self.round, self.nprime, self.batching))
         self.gc(2)
+
+        if self.Gprime is None or self.HprimeL is None:
+            self._phase2_loop_body_r0init()
+
+        msk = self.blinds[0][2*(self.offstate - 3)]
+        vct = self.Gprime if self.offstate == 3 else self.Hprime
+        fld = KeyV(tgt)
+
+        for i in range(0, tgt):
+            _scalarmult_key(_tmp_bf_0, vct.to(self.offpos + i), None, msk)
+            fld.read(i, _tmp_bf_0)
+            _gc_iter(i)
+
+        self.offpos += tgt
+        return fld
+
+    def _phase2_loop_ufold(self, buffers, tgt, inmem=False):
+        """
+        Universal folding
+        """
+        print('_phase2_loop_ufold, state: %s, off: %s, round: %s, nprime: %s, btch: %s' % (self.offstate, self.offpos, self.round, self.nprime, self.batching))
 
         # Input buffer processing.
         # The first round has in-memory G, H buffers
         lo, hi = None, None
-        tgt = min(self.batching, self.nprime)
+
         if self.round == 0 and self.offstate in (3, 4):
             if self.Gprime is None or self.HprimeL is None:
                 self._phase2_loop_body_r0init()
 
-            if self.offpos == 0 and self.offstate == 4:
+            if self.offpos == 0 and self.offstate == 4 and self.off_method <= 2:
                 self.yinvpowR.reset()
                 self.yinvpowR.rewind(self.nprime)
 
@@ -2423,8 +2485,7 @@ class BulletProofBuilder:
 
         # In memory caching from some point
         self.gc(5)
-        utils.ensure(self.off_method != 2 or self.off2_thresh <= self.nprime_thresh, "off2 threshold invalid")
-        inmem = self.round > 0 and (self.nprime <= self.nprime_thresh or (self.off_method == 2 and self.nprime <= self.off2_thresh))
+        utils.ensure(self.off_method < 2 or self.off2_thresh <= self.nprime_thresh, "off2 threshold invalid")
         fld = None
 
         if inmem:
@@ -2488,8 +2549,31 @@ class BulletProofBuilder:
 
         del(a0, b0, lo, hi, nbli)
         self.gc(15)
-        # State transition
+
         self.offpos += tgt
+        return fld
+
+    def _phase2_loop_fold(self, buffers):
+        """
+        Computes folding per partes
+        States: 3, 4, 5, 6
+        """
+        # print('phase2_loop_fold, state: %s, off: %s, round: %s, nprime: %s, btch: %s' % (self.offstate, self.offpos, self.round, self.nprime, self.batching))
+        self.gc(2)
+
+        cbatching = self.batching
+        if self.round == 0 and self.offstate in (3, 4):
+            cbatching *= 2  # same memory usage as no input is given
+
+        tgt = min(cbatching, self.nprime)
+        inmem = self.round > 0 and (self.nprime <= self.nprime_thresh or (self.off_method >= 2 and self.nprime <= self.off2_thresh))
+
+        if self.off_method == 3 and self.round == 0 and self.offstate in (3, 4):
+            fld = self._phase2_loop_r0foldGH(buffers, tgt)
+        else:
+            fld = self._phase2_loop_ufold(buffers, tgt, inmem)
+
+        # State transition
         if self.offpos >= self.nprime:
             self.offpos = 0
             self.offstate += 1
@@ -2502,7 +2586,7 @@ class BulletProofBuilder:
                 if self.offstate == 7:
                     self.b = fld.to(0)
 
-        if self.offstate >= 7 or (self.round == 0 and self.off_method == 2 and self.offstate >= 5):
+        if self.offstate >= 7 or (self.round == 0 and self.off_method >= 2 and self.offstate >= 5):
             self.nprime >>= 1
             self.round += 1
 
@@ -2558,7 +2642,7 @@ class BulletProofBuilder:
         """
         Initializes Gprime, HPrime for the round0, state in self.HprimeLRst
         """
-        print('_phase2_loop_body_r0init, state: %s, off: %s' % (self.offstate, self.offpos))
+        # print('_phase2_loop_body_r0init, state: %s, off: %s' % (self.offstate, self.offpos))
         if self.Gprec is None or self.Hprec2 is None:
             self.Gprec2 = self._gprec_aux(self.MN)
             self.Hprec2 = self._hprec_aux(self.MN)

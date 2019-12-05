@@ -591,20 +591,47 @@ class TestMoneroBulletproof(unittest.TestCase):
         Hprime = bytearray()
         app = bytearray()
         bpp = bytearray()
+        cbatch = max(1, MN // 2 // batching // 2)
+
         print('r0, fold G')
-        for i in range(MN // batching // 2):
+        for i in range(cbatch):
             cres = dechunk_res(bpi.prove_batch_off_step(None))
             if cres: Gprime += cres
 
         print('r0, fold H')
-        for i in range(MN // batching // 2):
+        for i in range(cbatch):
             cres = dechunk_res(bpi.prove_batch_off_step(None))
             if cres: Hprime += cres
 
         Gprime = bp.KeyV(MN//2, Gprime)
         Hprime = bp.KeyV(MN//2, Hprime)
 
-        if off_method == 2:
+        if off_method == 3:
+            print('r0 in-mem meth3 fold Gprime')
+            Gprec = vect_clone(None, bpi._gprec_aux(MN))
+            comp_folding(rrcons, MN//2, Gprec, 0)
+
+            print('r0 in-mem meth3 fold Hprime')
+            Hprec_ = vect_clone(None, bpi._hprec_aux(MN))
+            ypowinv = vect_clone(None, bp.KeyVPowers(MN, bp._invert(_tmp_bf_0, y)))
+            Hprec = vect_clone(None, bp.KeyVEval(MN, lambda i, d: bp._scalarmult_key(d, Hprec_.to(i), yinvpow[i])))
+            comp_folding(rrcons, MN//2, Hprec, 1)
+
+            print('r0 in-mem meth3 correct G, H')
+            for i in range(MN//2):
+                crypto.decodepoint_into(_tmp_pt_1, Gprec.to(i))
+                crypto.decodepoint_into(_tmp_pt_2, Gprime.to(i))
+                crypto.point_sub_into(_tmp_pt_1, _tmp_pt_1, _tmp_pt_2)
+                crypto.encodepoint_into(_tmp_bf_0, _tmp_pt_1)
+                Gprime.read(i, _tmp_bf_0)
+
+                crypto.decodepoint_into(_tmp_pt_1, Hprec.to(i))
+                crypto.decodepoint_into(_tmp_pt_2, Hprime.to(i))
+                crypto.point_sub_into(_tmp_pt_1, _tmp_pt_1, _tmp_pt_2)
+                crypto.encodepoint_into(_tmp_bf_0, _tmp_pt_1)
+                Hprime.read(i, _tmp_bf_0)
+
+        if off_method >= 2:
             print('in-mem fold for a, b')
             aprime = bp.KeyV(MN, l)
             bprime = bp.KeyV(MN, r)
@@ -636,7 +663,7 @@ class TestMoneroBulletproof(unittest.TestCase):
         # - clcr part, compute blinded cL, cR, LcA, LcB, RcA, RcB
         nprime = MN // 4
         round = 0
-        while round == 0 or nprime >= nprime_thresh or (off_method == 2 and nprime >= off2_thresh):
+        while round == 0 or nprime >= nprime_thresh or (off_method >= 2 and nprime >= off2_thresh):
             npr2 = nprime * 2
             round += 1
 
@@ -669,7 +696,7 @@ class TestMoneroBulletproof(unittest.TestCase):
 
                 # Offloaded folding up to batching limit / limit defined by Trezor
                 # Can be e.g. 8 elements. Remaining 8 computed in memory in the Trezor
-                if off_method == 2 and rrcons:
+                if off_method >= 2 and rrcons:
                     print('.. PC: in-memory fold, len: ', len(v), nprime)
                     comp_folding(rrcons, nprime, v, ix)
 
@@ -721,7 +748,11 @@ class TestMoneroBulletproof(unittest.TestCase):
 
     def test_prove_batch16_off2(self):
         self.prove_batch_off(16)
-        self.prove_batch_off(16, 1)
+        self.prove_batch_off(16, 2)
+
+    def test_prove_batch16_off3(self):
+        self.prove_batch_off(16)
+        self.prove_batch_off(16, 3)
 
     def test_prove_batch16_off2_64b(self):
         self.prove_batch_off(16, 2, off2_thresh=64, batching=64)

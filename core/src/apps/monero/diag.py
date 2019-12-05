@@ -131,7 +131,7 @@ if __debug__:
                     bpi.off2_thresh = msg.pd[2]
                     bpi.batching = msg.pd[3]
 
-                res = bpi.prove_batch_off(sv, gamma)
+                res = bpi.prove_batch_off(sv, gamma, msg.data3)
                 state = bpi.dump_state()
                 del(bp, bpi, crypto)
                 gc.collect()
