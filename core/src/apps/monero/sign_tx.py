@@ -14,7 +14,7 @@ async def sign_tx(ctx, received_msg, keychain):
     # between calls.
     while True:
         if __debug__:
-            log.debug(__name__, "#### F: %s, A: %s", gc.mem_free(), gc.mem_alloc())
+            log.debug(__name__, "#### F: %s, A: %s, step: %s", gc.mem_free(), gc.mem_alloc(), get_step(received_msg))
         gc.collect()
         gc.threshold(gc.mem_free() // 4 + gc.mem_alloc())
 
@@ -27,6 +27,9 @@ async def sign_tx(ctx, received_msg, keychain):
         utils.unimport_end(mods)
 
         received_msg = await ctx.read_any(accept_msgs)
+
+    if __debug__:
+        log.debug(__name__, "#### F: %s, A: %s, step: -1", gc.mem_free(), gc.mem_alloc())
 
     utils.unimport_end(mods)
     return result_msg
@@ -135,3 +138,35 @@ async def sign_tx_dispatch(state, msg, keychain):
 
     else:
         raise wire.DataError("Unknown message")
+
+
+def get_step(msg):
+    if msg.MESSAGE_WIRE_TYPE == MessageType.MoneroTransactionInitRequest:
+        return 1
+
+    elif msg.MESSAGE_WIRE_TYPE == MessageType.MoneroTransactionSetInputRequest:
+        return 2
+
+    elif msg.MESSAGE_WIRE_TYPE == MessageType.MoneroTransactionInputsPermutationRequest:
+        return 3
+
+    elif msg.MESSAGE_WIRE_TYPE == MessageType.MoneroTransactionInputViniRequest:
+        return 4
+
+    elif msg.MESSAGE_WIRE_TYPE == MessageType.MoneroTransactionAllInputsSetRequest:
+        return 5
+
+    elif msg.MESSAGE_WIRE_TYPE == MessageType.MoneroTransactionSetOutputRequest:
+        return 6
+
+    elif msg.MESSAGE_WIRE_TYPE == MessageType.MoneroTransactionAllOutSetRequest:
+        return 7
+
+    elif msg.MESSAGE_WIRE_TYPE == MessageType.MoneroTransactionSignInputRequest:
+        return 9
+
+    elif msg.MESSAGE_WIRE_TYPE == MessageType.MoneroTransactionFinalRequest:
+        return 10
+
+    else:
+        return -1
