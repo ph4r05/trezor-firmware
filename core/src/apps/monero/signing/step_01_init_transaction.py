@@ -45,6 +45,8 @@ async def init_transaction(
     await confirms.require_confirm_transaction(
         state.ctx, state, tsx_data, state.creds.network_type
     )
+    state.creds.address = None
+    state.creds.network_type = None
     gc.collect()
     state.mem_trace(3)
 
@@ -66,15 +68,13 @@ async def init_transaction(
     _check_subaddresses(state, tsx_data.outputs)
 
     # Extra processing, payment id
-    state.tx.version = 2  # current Monero transaction format (RingCT = 2)
-    state.tx.unlock_time = tsx_data.unlock_time
     _process_payment_id(state, tsx_data)
     await _compute_sec_keys(state, tsx_data)
     gc.collect()
 
     # Iterative tx_prefix_hash hash computation
-    state.tx_prefix_hasher.uvarint(state.tx.version)
-    state.tx_prefix_hasher.uvarint(state.tx.unlock_time)
+    state.tx_prefix_hasher.uvarint(2)  # current Monero transaction format (RingCT = 2)
+    state.tx_prefix_hasher.uvarint(tsx_data.unlock_time)
     state.tx_prefix_hasher.uvarint(state.input_count)  # ContainerType, size
     state.mem_trace(10, True)
 

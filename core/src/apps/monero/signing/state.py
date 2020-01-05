@@ -6,14 +6,6 @@ from trezor import log
 from apps.monero.xmr import crypto
 
 
-class TprefixStub:
-    __slots__ = ("version", "unlock_time", "vin", "vout", "extra")
-
-    def __init__(self, **kwargs):
-        for kw in kwargs:
-            setattr(self, kw, kwargs[kw])
-
-
 class State:
 
     STEP_INP = const(100)
@@ -113,8 +105,6 @@ class State:
 
         self.subaddresses = {}
 
-        # simple stub containing items hashed into tx prefix
-        self.tx = TprefixStub(vin=[], vout=[], extra=b"")
         # TX_EXTRA_NONCE extra field for tx.extra, due to sort_tx_extra()
         self.extra_nonce = None
 

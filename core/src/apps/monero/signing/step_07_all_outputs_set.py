@@ -25,17 +25,20 @@ async def all_outputs_set(state: State):
     state.is_processing_offloaded = False
     state.mem_trace(2)
 
-    _set_tx_extra(state)
+    extra_b = _set_tx_extra(state)
     # tx public keys not needed anymore
     state.additional_tx_public_keys = None
     state.tx_pub = None
+    state.rsig_grouping = None
+    state.rsig_offload = None
     gc.collect()
     state.mem_trace(3)
 
     # Completes the transaction prefix hash by including extra
-    _set_tx_prefix(state)
-    extra_b = state.tx.extra
+    _set_tx_prefix(state, extra_b)
     state.tx = None
+    state.output_change = None
+
     gc.collect()
     state.mem_trace(4)
 
@@ -62,6 +65,10 @@ async def all_outputs_set(state: State):
 
     state.full_message = state.full_message_hasher.get_digest()
     state.full_message_hasher = None
+    state.output_pk_commitments = None
+    state.summary_outs_money = None
+    state.summary_inputs_money = None
+    state.fee = None
 
     return MoneroTransactionAllOutSetAck(
         extra=extra_b,
@@ -136,10 +143,10 @@ def _set_tx_extra(state: State):
         utils.memcpy(extra, offset, state.extra_nonce, 0, len(state.extra_nonce))
         state.extra_nonce = None
 
-    state.tx.extra = extra
+    return extra
 
 
-def _set_tx_prefix(state: State):
+def _set_tx_prefix(state: State, extra):
     """
     Adds `extra` to the tx_prefix_hash, which is the last needed item,
     so the tx_prefix_hash is now complete and can be incorporated
@@ -147,8 +154,8 @@ def _set_tx_prefix(state: State):
     """
     # Serializing "extra" type as BlobType.
     # uvarint(len(extra)) || extra
-    state.tx_prefix_hasher.uvarint(len(state.tx.extra))
-    state.tx_prefix_hasher.buffer(state.tx.extra)
+    state.tx_prefix_hasher.uvarint(len(extra))
+    state.tx_prefix_hasher.buffer(extra)
 
     state.tx_prefix_hash = state.tx_prefix_hasher.get_digest()
     state.tx_prefix_hasher = None
