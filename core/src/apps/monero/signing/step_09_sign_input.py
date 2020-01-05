@@ -71,6 +71,7 @@ async def sign_input(
     if not crypto.ct_equals(vini_hmac_comp, vini_hmac):
         raise ValueError("HMAC is not correct")
 
+    src_entr.real_out_additional_tx_keys = []
     gc.collect()
     state.mem_trace(1, True)
 

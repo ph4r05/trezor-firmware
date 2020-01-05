@@ -16,7 +16,12 @@ def compute_hash(rr):
 def export_key_image(creds, subaddresses, td):
     out_key = crypto.decodepoint(td.out_key)
     tx_pub_key = crypto.decodepoint(td.tx_pub_key)
-    additional_tx_pub_keys = [crypto.decodepoint(x) for x in td.additional_tx_pub_keys]
+    additional_tx_pub_keys = (
+        [crypto.decodepoint(td.additional_tx_pub_keys[td.internal_output_index])]
+        if len(td.additional_tx_pub_keys) > td.internal_output_index
+        else []
+    )
+
     ki, sig = _export_key_image(
         creds,
         subaddresses,

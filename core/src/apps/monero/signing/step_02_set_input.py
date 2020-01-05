@@ -49,9 +49,15 @@ async def set_input(state: State, src_entr: MoneroTransactionSourceEntry):
     out_key = crypto.decodepoint(src_entr.outputs[src_entr.real_output].key.dest)
     # the tx_pub of our UTXO stored inside its transaction
     tx_key = crypto.decodepoint(src_entr.real_out_tx_key)
-    additional_keys = [
-        crypto.decodepoint(x) for x in src_entr.real_out_additional_tx_keys
-    ]
+    additional_keys = (
+        [
+            crypto.decodepoint(
+                src_entr.real_out_additional_tx_keys[src_entr.real_output_in_tx_index]
+            )
+        ]
+        if len(src_entr.real_out_additional_tx_keys) > src_entr.real_output_in_tx_index
+        else []
+    )
 
     """
     Calculates `derivation = Ra`, private spend key `x = H(Ra||i) + b` to be able

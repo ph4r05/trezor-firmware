@@ -81,17 +81,16 @@ def is_out_to_account(
         return subaddresses[subaddress_spendkey], derivation
 
     if additional_derivations and len(additional_derivations) > 0:
-        if output_index >= len(additional_derivations):
-            raise ValueError("Wrong number of additional derivations")
-
+        # Originally, additional_derivations[output_index] was used,
+        # but as other keys are not needed, placing to output_index[0] saves memory.
         subaddress_spendkey = derive_subaddress_public_key(
-            out_key, additional_derivations[output_index], output_index
+            out_key, additional_derivations[0], output_index
         )
         subaddress_spendkey = crypto.encodepoint(subaddress_spendkey)
         if subaddress_spendkey in subaddresses:
             return (
                 subaddresses[subaddress_spendkey],
-                additional_derivations[output_index],
+                additional_derivations[0],
             )
 
     return None
