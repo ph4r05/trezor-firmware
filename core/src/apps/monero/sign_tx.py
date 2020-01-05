@@ -19,6 +19,7 @@ async def sign_tx(ctx, received_msg, keychain):
         gc.threshold(gc.mem_free() // 4 + gc.mem_alloc())
 
         result_msg, accept_msgs = await sign_tx_dispatch(state, received_msg, keychain)
+        if state: state.dump_size()
         if accept_msgs is None:
             break
 
