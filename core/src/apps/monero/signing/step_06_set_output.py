@@ -330,9 +330,9 @@ def _rsig_process_bp(state: State, rsig_data):
     # array sizes compared to the serialized bulletproof format
     # thus direct serialization cannot be used.
     state.full_message_hasher.rsig_val(bp_obj, True, raw=False)
-    res = range_signatures.verify_bp(bp_obj, state.output_amounts, state.output_masks)
-    utils.ensure(res, "BP verification fail")
-    state.mem_trace("BP verified" if __debug__ else None, collect=True)
+    # res = range_signatures.verify_bp(bp_obj, state.output_amounts, state.output_masks)
+    # utils.ensure(res, "BP verification fail")
+    # state.mem_trace("BP verified" if __debug__ else None, collect=True)
     del (bp_obj, range_signatures)
 
     # State cleanup after verification is finished

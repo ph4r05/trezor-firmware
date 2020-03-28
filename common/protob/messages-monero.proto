@@ -160,6 +160,7 @@ message MoneroTransactionInitAck {
  */
 message MoneroTransactionSetInputRequest {
     optional MoneroTransactionSourceEntry src_entr = 1;
+    repeated MoneroTransactionSourceEntry src_entries = 2; // TODO: batching
 }
 
 /**

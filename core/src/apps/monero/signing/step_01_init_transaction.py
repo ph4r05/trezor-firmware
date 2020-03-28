@@ -197,8 +197,8 @@ def _check_rsig_data(state: State, rsig_data: MoneroTransactionRsigData):
     else:
         raise ValueError("Unknown rsig type")
 
-    if state.output_count > 2:
-        state.rsig_offload = True
+    # if state.output_count > 2:
+    state.rsig_offload = True
 
     _check_grouping(state)
 
